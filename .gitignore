@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.vitest/
+test-results/
+playwright-report/
+.artifacts/
+.claude/
+.workbuddy/
+.DS_Store
+*.log
+*.tgz

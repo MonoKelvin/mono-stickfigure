@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f8fbff" />
+    <title>Mono-StickFigure · 网页也是游乐场</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main>
+      <header class="masthead">
+        <a class="brand" href="./">Mono-StickFigure</a>
+        <span class="version">首批可运行闭环 / 0.0.1</span>
+      </header>
+      <section class="intro">
+        <div>
+          <h1>让网页，成为游乐场。</h1>
+          <p>不是预设坐标里的小动画。它测量真实元素的边框，跟着平台移动；平台消失，就自然落下。</p>
+        </div>
+        <button id="restart" class="button">重新开始</button>
+      </section>
+      <div class="experiment">
+        <section class="play-area" aria-label="火柴人实验场">
+          <div class="stage-heading"><h2>正在发生的实验</h2><span id="state" role="status">正在准备</span></div>
+          <div id="playground" class="stage">
+            <div class="annotation">点击右侧控制，改变这个小世界。</div>
+            <div id="panel" class="platform panel">
+              <span class="platform-label">可移动的面板</span>
+              <span class="platform-detail">我的顶部是一条真实边框</span>
+            </div>
+            <button id="landing" class="platform landing" type="button">这也是一个按钮 <span id="clicks">0</span></button>
+            <div id="ground" class="ground">下方平台</div>
+          </div>
+          <div class="stage-footer"><span>支持脚的位置来自 DOM 测量</span><span>Canvas 只覆盖人物附近</span></div>
+        </section>
+        <aside class="controls" aria-label="实验控制">
+          <h2>试着改变它</h2>
+          <p class="small">先跳一跳，再让脚下的面板消失。</p>
+          <div class="control-group">
+            <button id="jump" class="button primary">原地跳跃</button>
+            <button id="drop" class="button">松开支撑，向下落</button>
+            <button id="place-panel" class="button">回到面板顶部</button>
+            <button id="place-button" class="button">站到按钮顶部</button>
+          </div>
+          <div class="control-group">
+            <button id="move" class="button" aria-pressed="false">移动面板</button>
+            <button id="hide-panel" class="button" aria-pressed="false">隐藏面板</button>
+            <button id="pause" class="button">暂停人物</button>
+            <button id="destroy" class="button quiet">销毁实例</button>
+          </div>
+          <p id="message" class="message" aria-live="polite">人物正在面板上等待。</p>
+        </aside>
+      </div>
+      <section class="notes">
+        <div><h2>滚动一下，位置仍然对得上。</h2><p>人物保存与平台的相对锚点，而不是一个固定屏幕坐标。你可以滚动页面，或让上面的面板左右移动。</p></div>
+        <details><summary>查看当前测量</summary><pre id="diagnostics">等待第一帧</pre></details>
+      </section>
+      <section class="scope">
+        <h2>这一批，先把基础做对。</h2>
+        <p>已接通边框平台、滚动跟随、跳跃、坠落与落地。文字平台、完整 24 动作、20 类触发和更多适配将在后续批次加入；这不是完整首版验收结果。</p>
+        <div class="scroll-marker">继续滚动后再回来，人物会保留平台锚点。</div>
+      </section>
+      <footer>原生 TypeScript。没有外部动画依赖，也不上传页面内容。</footer>
+    </main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

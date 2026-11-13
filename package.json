@@ -1,0 +1,59 @@
+{
+  "name": "mono-stickfigure",
+  "version": "0.0.1",
+  "private": true,
+  "description": "在任何前端页面上活动的火柴人",
+  "author": "MonoKelvin",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MonoKelvin/mono-stickfigure.git"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.zh.md"
+  ],
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.mts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./core": {
+      "import": {
+        "types": "./dist/core.d.mts",
+        "default": "./dist/core.mjs"
+      },
+      "require": {
+        "types": "./dist/core.d.cts",
+        "default": "./dist/core.cjs"
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "build:watch": "tsdown --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:browser": "playwright test",
+    "verify:demo": "node scripts/verify-demo.mjs",
+    "test:package": "node scripts/check-package.mjs",
+    "bench": "node scripts/bench.mjs",
+    "dev": "vite"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65.0",
+    "@types/node": "26.6.6",
+    "tsdown": "0.23.7",
+    "typescript": "7.0.2",
+    "vite": "8.3.8",
+    "vitest": "5.1.0"
+  }
+}
