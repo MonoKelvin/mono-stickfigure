@@ -1,68 +1,210 @@
 <!doctype html>
 <html lang="zh-CN">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#f8fbff" />
-    <title>Mono-StickFigure · 网页也是游乐场</title>
-    <link rel="stylesheet" href="./style.css" />
-  </head>
-  <body>
-    <main>
-      <header class="masthead">
-        <a class="brand" href="./">Mono-StickFigure</a>
-        <span class="version">首批可运行闭环 / 0.0.1</span>
-      </header>
-      <section class="intro">
-        <div>
-          <h1>让网页，成为游乐场。</h1>
-          <p>不是预设坐标里的小动画。它测量真实元素的边框，跟着平台移动；平台消失，就自然落下。</p>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#f7f7f7" />
+  <meta name="description" content="让文字、色块和边框成为一个小小漫游者的地形。" />
+  <title>Mono-StickFigure · 字里行间，皆可漫游</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Syne:wght@700;800&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23181818'/%3E%3Ccircle cx='16' cy='7' r='3' fill='none' stroke='white' stroke-width='2'/%3E%3Cpath d='M16 10v10m0-7-6 5m6-5 6 5m-6 2-5 8m5-8 5 8' fill='none' stroke='white' stroke-width='2'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <svg class="icon-definitions" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" data-mono-stickfigure>
+    <defs>
+      <symbol id="icon-idle" viewBox="0 0 24 24"><circle cx="12" cy="4" r="2" /><path d="M12 6v8m0-6-4 5m4-5 4 5m-4 1-3 7m3-7 3 7" /></symbol>
+      <symbol id="icon-walk" viewBox="0 0 24 24"><circle cx="13" cy="4" r="2" /><path d="m13 6-2 8m1-5-5 4m5-4 4 3 3-1m-8 3-4 7m4-7 5 3v4" /></symbol>
+      <symbol id="icon-run" viewBox="0 0 24 24"><circle cx="15" cy="4" r="2" /><path d="m14 6-4 8m2-5 4 3 4-3m-8 0-4-1-3 4m5 2 5 3 3-3m-8 0-3 5H3" /></symbol>
+      <symbol id="icon-sprint" viewBox="0 0 24 24"><circle cx="17" cy="4" r="2" /><path d="m16 6-5 7m3-4 4 3 3-3m-7 0-4-1-3 3m4 2 6 3 3-2m-9-1-4 5H2M2 6h5M1 10h4" /></symbol>
+      <symbol id="icon-turn" viewBox="0 0 24 24"><path d="M7 7a7 7 0 1 1-2 10M7 3v5H2" /><path d="M12 9v6m-3-3h6" /></symbol>
+      <symbol id="icon-jump" viewBox="0 0 24 24"><circle cx="12" cy="6" r="2" /><path d="M12 8v6m0-4-5-5m5 5 5-5m-5 9-4 3 2 3m2-6 4 3-2 3M3 22h18" /></symbol>
+      <symbol id="icon-run-jump" viewBox="0 0 24 24"><circle cx="14" cy="5" r="2" /><path d="m13 7-2 7m1-4 5 1 3-4m-8 3-4-2-2 3m5 3 5 3 3-2m-8-1-4 4H3M3 22h18" /></symbol>
+      <symbol id="icon-long-jump" viewBox="0 0 24 24"><path d="M3 16C6 3 18 3 21 16m-4-2 4 2 1-4M2 21h5m10 0h5" /><circle cx="12" cy="10" r="1.5" /><path d="m12 12 1 3-4 3m4-3 4 2" /></symbol>
+      <symbol id="icon-fall" viewBox="0 0 24 24"><path d="M4 3h7m6 0v11m-4-3 4 4 4-4M4 21h17" /><circle cx="8" cy="10" r="2" /><path d="m8 12 1 4m0-2-4-1m4 1 3-1m-3 3-3 3m3-3 3 3" /></symbol>
+      <symbol id="icon-land" viewBox="0 0 24 24"><circle cx="12" cy="7" r="2" /><path d="m12 9-2 5 5 3-3 3m-2-6-4 3 2 3m3-9 5 2 3-1M3 22h18" /></symbol>
+      <symbol id="icon-roll" viewBox="0 0 24 24"><path d="M6 7a7 7 0 1 1-1 10M6 3v5H1M3 22h18" /><circle cx="12" cy="11" r="2" /><path d="m11 13-3 3 5 2 3-3-3-1-2 2" /></symbol>
+      <symbol id="icon-wave" viewBox="0 0 24 24"><circle cx="11" cy="4" r="2" /><path d="M11 6v8m0-5-5 4m5-4 5 2 2-5m-7 8-3 7m3-7 3 7M21 3v3" /></symbol>
+      <symbol id="icon-crouch" viewBox="0 0 24 24"><circle cx="12" cy="7" r="2" /><path d="m12 9-3 6 6 3-4 3m-2-6-4 3 3 3m3-9 5 3 4-1M3 22h18" /></symbol>
+      <symbol id="icon-rest" viewBox="0 0 24 24"><circle cx="12" cy="4" r="2" /><path d="M12 6v8m0-6-5 3 4 3m1-6 5 3-4 3m-1 0-3 7m3-7 3 7" /></symbol>
+      <symbol id="icon-prone" viewBox="0 0 24 24"><circle cx="18" cy="14" r="2" /><path d="m16 16-7 1-6-1m6 1-5 3m9-4 2 4h5M2 22h20" /></symbol>
+      <symbol id="icon-stand" viewBox="0 0 24 24"><circle cx="11" cy="5" r="2" /><path d="m11 7-1 7 4 3v4m-4-7-5 4 3 3m3-11 4 3M20 15V4m-3 3 3-3 3 3" /></symbol>
+      <symbol id="icon-route" viewBox="0 0 24 24"><circle cx="4" cy="18" r="2" /><circle cx="20" cy="6" r="2" /><path d="M6 18h7a3 3 0 0 0 0-6H9a3 3 0 0 1 0-6h9" /></symbol>
+    </defs>
+  </svg>
+  <a class="skip-link" href="#main">跳到内容</a>
+  <div class="page-shell">
+    <header class="masthead">
+      <a id="header-platform" class="brand" href="#main" aria-label="Mono-StickFigure 首页"><span class="wordmark">mono.</span><span class="brand-name">stickfigure</span></a>
+      <nav aria-label="页面导航"><a href="#motion">动作与路线</a><a href="#reading">字里行间</a><a href="#structure">小小结构</a><a href="#scrolling">继续漫游</a></nav>
+      <span class="edition">网页漫游者 <span class="version">v0.0.1</span></span>
+    </header>
+
+    <main id="main">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <h1 id="hero-title">字里行间，<br />皆可漫游。</h1>
+          <div class="hero-note">
+            <svg class="roamer-mark" viewBox="0 0 136 92" aria-hidden="true"><path class="mark-ground" d="M4 82h124M75 62h48" /><circle cx="61" cy="17" r="7" /><path d="m58 25-8 24m5-15 15 9 12-11m-27 2-12-3-10 13m17 5 18 15 13-10M50 49 36 71H23" /><path class="mark-trail" d="M16 24h16M9 33h17M3 42h14" /></svg>
+            <h2>让网页多一个<br />会散步的小居民。</h2>
+            <p>文字、色块、边框，都是它的落脚点。<br />让它自由探索，或者亲自带它走一段。</p>
+            <button class="text-button" data-place="hero-title">回到大字上 <span aria-hidden="true">↗</span></button>
+          </div>
         </div>
-        <button id="restart" class="button">重新开始</button>
-      </section>
-      <div class="experiment">
-        <section class="play-area" aria-label="火柴人实验场">
-          <div class="stage-heading"><h2>正在发生的实验</h2><span id="state" role="status">正在准备</span></div>
-          <div id="playground" class="stage">
-            <div class="annotation">点击右侧控制，改变这个小世界。</div>
-            <div id="panel" class="platform panel">
-              <span class="platform-label">可移动的面板</span>
-              <span class="platform-detail">我的顶部是一条真实边框</span>
+
+        <div class="toolbar" aria-label="漫游控制">
+          <div class="mode-controls"><button id="autonomy" class="button primary" aria-pressed="true">自由漫游</button><span id="state" data-mono-stickfigure class="state" role="status">正在准备</span></div>
+          <div class="toolbar-end">
+            <button id="restart" class="text-button">重新开始</button>
+            <details class="settings-panel">
+              <summary><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16M8 4v6M16 14v6" /></svg>参数</summary>
+              <div class="settings">
+                <label for="size">人物大小 <output id="size-value" for="size">18 px</output><input id="size" type="range" min="12" max="40" step="2" value="18" /></label>
+                <label for="gravity">重力 <output id="gravity-value" for="gravity">980 px/s²</output><input id="gravity" type="range" min="490" max="1470" step="490" value="980" /></label>
+                <label for="color-tolerance">色差阈值 <output id="tolerance-value" for="color-tolerance">0.01</output><input id="color-tolerance" type="range" min="0.01" max="0.20" step="0.01" value="0.01" /></label>
+                <p class="caption">阈值越低，越接近背景的色块也会成为平台。参数改变后重新创建人物。</p>
+              </div>
+            </details>
+          </div>
+        </div>
+        <div class="action-bar" aria-label="人物动作">
+          <div class="action-section">
+            <h3>走 · 跑 · 转身</h3>
+            <div class="action-group">
+              <button id="idle" class="action-button"><svg class="icon" aria-hidden="true"><use href="#icon-idle" /></svg>站立</button>
+              <button id="walk" class="action-button"><svg class="icon" aria-hidden="true"><use href="#icon-walk" /></svg>走一段</button>
+              <button id="run" class="action-button"><svg class="icon" aria-hidden="true"><use href="#icon-run" /></svg>跑一段</button>
+              <button id="sprint" class="action-button"><svg class="icon" aria-hidden="true"><use href="#icon-sprint" /></svg>冲刺</button>
+              <button id="turn" class="action-button"><svg class="icon" aria-hidden="true"><use href="#icon-turn" /></svg>转身</button>
             </div>
-            <button id="landing" class="platform landing" type="button">这也是一个按钮 <span id="clicks">0</span></button>
-            <div id="ground" class="ground">下方平台</div>
           </div>
-          <div class="stage-footer"><span>支持脚的位置来自 DOM 测量</span><span>Canvas 只覆盖人物附近</span></div>
-        </section>
-        <aside class="controls" aria-label="实验控制">
-          <h2>试着改变它</h2>
-          <p class="small">先跳一跳，再让脚下的面板消失。</p>
-          <div class="control-group">
-            <button id="jump" class="button primary">原地跳跃</button>
-            <button id="drop" class="button">松开支撑，向下落</button>
-            <button id="place-panel" class="button">回到面板顶部</button>
-            <button id="place-button" class="button">站到按钮顶部</button>
+          <div class="action-section">
+            <h3>起跳 · 落地</h3>
+            <div class="action-group">
+              <button id="jump" class="action-button"><svg class="icon" aria-hidden="true"><use href="#icon-jump" /></svg>跳起来</button>
+              <button id="run-jump" class="action-button"><svg class="icon" aria-hidden="true"><use href="#icon-run-jump" /></svg>跑跳</button>
+              <button id="running-long-jump" class="action-button"><svg class="icon" aria-hidden="true"><use href="#icon-long-jump" /></svg>助跑远跳</button>
+              <button id="drop" class="action-button"><svg class="icon" aria-hidden="true"><use href="#icon-fall" /></svg>向下落</button>
+              <button id="land-soft" class="action-button"><svg class="icon" aria-hidden="true"><use href="#icon-land" /></svg>落地缓冲</button>
+              <button id="roll" class="action-button"><svg class="icon" aria-hidden="true"><use href="#icon-roll" /></svg>翻滚</button>
+            </div>
           </div>
-          <div class="control-group">
-            <button id="move" class="button" aria-pressed="false">移动面板</button>
-            <button id="hide-panel" class="button" aria-pressed="false">隐藏面板</button>
-            <button id="pause" class="button">暂停人物</button>
-            <button id="destroy" class="button quiet">销毁实例</button>
+          <div class="action-section">
+            <h3>停下来，歇一会儿</h3>
+            <div class="action-group">
+              <button id="wave" class="action-button"><svg class="icon" aria-hidden="true"><use href="#icon-wave" /></svg>打个招呼</button>
+              <button id="crouch" class="action-button"><svg class="icon" aria-hidden="true"><use href="#icon-crouch" /></svg>蹲下</button>
+              <button id="rest" class="action-button"><svg class="icon" aria-hidden="true"><use href="#icon-rest" /></svg>叉腰休息</button>
+              <button id="prone" class="action-button"><svg class="icon" aria-hidden="true"><use href="#icon-prone" /></svg>趴下</button>
+              <button id="stand-up" class="action-button"><svg class="icon" aria-hidden="true"><use href="#icon-stand" /></svg>起身</button>
+            </div>
           </div>
-          <p id="message" class="message" aria-live="polite">人物正在面板上等待。</p>
-        </aside>
-      </div>
-      <section class="notes">
-        <div><h2>滚动一下，位置仍然对得上。</h2><p>人物保存与平台的相对锚点，而不是一个固定屏幕坐标。你可以滚动页面，或让上面的面板左右移动。</p></div>
-        <details><summary>查看当前测量</summary><pre id="diagnostics">等待第一帧</pre></details>
+        </div>
+        <div class="motion-feedback" data-mono-stickfigure>
+          <div class="feedback-copy"><span id="motion-sequence" class="motion-sequence">站立</span><p id="message" class="message" aria-live="polite">正在寻找落脚点。</p></div>
+          <div class="lifecycle-actions"><button class="text-button" data-place="action-runway">到观察平台上</button><button id="cancel-action" class="text-button" disabled>取消当前请求</button><button id="pause" class="text-button">暂停人物</button><button id="destroy" class="text-button muted">销毁实例</button></div>
+        </div>
+        <div id="action-runway" class="observation-runway"><span>留一点空间，走、跑、跳、翻滚。</span><span aria-hidden="true">↔</span></div>
+        <p id="text-runway" class="text-runway">走过一段文字，跨过一格留白。<br /><span>页面的每个角落，都可以有一点小小的动静。</span></p>
+        <div class="inline-tools"><button class="text-button" data-place="text-runway">沿文字走走 <span aria-hidden="true">↗</span></button><span class="caption">空格和标点，把连续的文字分成不同落脚点。</span></div>
       </section>
-      <section class="scope">
-        <h2>这一批，先把基础做对。</h2>
-        <p>已接通边框平台、滚动跟随、跳跃、坠落与落地。文字平台、完整 24 动作、20 类触发和更多适配将在后续批次加入；这不是完整首版验收结果。</p>
-        <div class="scroll-marker">继续滚动后再回来，人物会保留平台锚点。</div>
+
+      <section id="motion" class="chapter motion-chapter" aria-labelledby="motion-title">
+        <div class="chapter-heading"><h2 id="motion-title">下一步，有个目的地。</h2><span class="chapter-label">助跑 · 寻路 · 高落翻滚</span></div>
+        <div class="motion-layout">
+          <div id="route-terrain" class="route-terrain" aria-label="由真实色块组成的动作路线">
+            <div class="terrain-heading"><span>跨过留白，再稳稳落下。</span><svg class="icon" aria-hidden="true"><use href="#icon-route" /></svg></div>
+            <div id="route-source" class="route-platform route-source"><span>起点</span><span class="platform-letter" aria-hidden="true">a.</span></div>
+            <div id="route-step" class="route-platform route-step"><span>借一步</span></div>
+            <div id="route-goal" class="route-platform route-goal"><span>下一站</span><span class="platform-letter" aria-hidden="true">b.</span></div>
+            <div id="drop-source" class="route-platform drop-source"><span>高处，留一点勇气。</span></div>
+            <div id="motion-runway" class="motion-runway"><span>落地之后，继续向前。</span><span aria-hidden="true">↗</span></div>
+          </div>
+          <aside class="motion-notes">
+            <div class="motion-note"><span class="note-number">01</span><div><h3>先助跑，再起跳。</h3><p>真正加速到起跳点。抬臂收腿，落地缓冲，再接着跑。</p><button id="demo-long-jump" class="text-button"><svg class="icon" aria-hidden="true"><use href="#icon-long-jump" /></svg>看一次助跑远跳</button></div></div>
+            <div class="motion-note"><span class="note-number">02</span><div><h3>把目标交给它。</h3><p>沿可达的平台行进，跨过中间的留白。也可以随时取消。</p><div class="route-options"><label for="route-pace" class="sr-only">移动步态</label><select id="route-pace"><option value="walk">走过去</option><option value="run" selected>跑过去</option><option value="sprint">冲刺过去</option></select><button id="demo-route" class="text-button"><svg class="icon" aria-hidden="true"><use href="#icon-route" /></svg>到下一站</button></div><button id="demo-point" class="text-button">用页面坐标选择落点 <span aria-hidden="true">↗</span></button></div></div>
+            <div class="motion-note"><span class="note-number">03</span><div><h3>让冲击顺势过去。</h3><p>从高处落下，先屈膝缓冲，空间足够时接一个前滚翻。</p><button id="demo-drop" class="text-button"><svg class="icon" aria-hidden="true"><use href="#icon-roll" /></svg>看高落地与翻滚</button></div></div>
+            <div class="terrain-tools"><button class="text-button" data-place="motion-runway">到长平台上</button><button class="text-button" data-place="route-source">到起点上</button><button id="cancel-route" class="text-button" disabled>取消当前请求</button></div>
+            <div class="route-feedback" data-mono-stickfigure><span id="route-sequence" class="motion-sequence">等待出发</span><p id="route-message" class="caption" role="status">选一段旅程，看看动作怎样接起来。</p></div>
+          </aside>
+        </div>
       </section>
-      <footer>原生 TypeScript。没有外部动画依赖，也不上传页面内容。</footer>
+
+      <section id="reading" class="chapter reading-chapter" aria-labelledby="reading-title">
+        <div class="chapter-heading"><h2 id="reading-title">一本能散步的书。</h2><span class="chapter-label">文字与字形</span></div>
+        <div class="reading-grid">
+          <article id="article-platform" class="reading-article">
+            <h3>慢一点，也很好。</h3>
+            <p>在标题上停一会儿，在句号前转个弯。一个小小的角色，让原本静止的页面有了另一种阅读节奏。没有固定路线，也不需要每一步都奔向终点。</p>
+            <p>普通文字会按真实排版分片；大字号文字还会读取字形的顶部轮廓。它不会把整块段落的矩形，当作一条悬在文字上方的地面。</p>
+            <blockquote id="quote-platform">字与字之间，<br />也有可以停留的地方。<cite>一份散步札记</cite></blockquote>
+            <div class="inline-tools"><button class="text-button" data-place="article-platform">到正文上</button><button class="text-button" data-place="quote-platform">到这句话上</button></div>
+          </article>
+          <aside class="reading-side">
+            <div class="side-heading"><span>由页面决定地形</span><span aria-hidden="true">↙</span></div>
+            <pre id="code-platform" class="code-block"><code>const actor = createStickFigure({
+  root: document,
+  appearance: { height: 18 },
+  autonomous: true,
+  physics: { gravity: 980, jumpHeight: 52 },
+  recognition: { colorTolerance: 0.01 }
+});
+await actor.start();</code></pre>
+            <button class="text-button" data-place="code-platform">看看代码里的落脚点 <span aria-hidden="true">↗</span></button>
+            <div id="physics-note" class="physics-note">
+              <h3>起跳之后，交给重力。</h3>
+              <p class="equation">v = v₀ + gt<br />y = y₀ + v₀t + ½gt²</p>
+              <p class="caption">以 CSS px 和秒为单位。身体姿态可以变化，空中位置仍按物理运动推进。</p>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section class="color-chapter" aria-labelledby="color-title">
+        <div class="color-intro"><h2 id="color-title">没有边框，<br />也有边界。</h2><p>当填充色与背景足够不同，<br />它们的交界处就能成为平台。</p></div>
+        <div id="playground" class="platform-landscape">
+          <article id="panel" class="moving-panel"><h3>一张可以移动的便笺。</h3><p>试着移动它，或让它暂时消失。</p></article>
+          <div class="button-stairs"><button id="short-step" class="stair stair-small" data-place="short-step">浅灰</button><button id="landing" class="stair">墨色按钮 <span id="clicks">0</span></button><button id="wide-step" class="stair stair-wide" data-place="wide-step">深灰</button></div>
+        </div>
+        <div class="scene-tools"><button id="move" class="text-button" aria-pressed="false">移动便笺</button><button id="hide-panel" class="text-button" aria-pressed="false">隐藏便笺</button><button id="place-panel" class="text-button">到便笺上</button><button id="place-button" class="text-button">到墨色按钮上</button><button id="navigate-button" class="text-button">自己跑到按钮上 <span aria-hidden="true">↗</span></button></div>
+        <div id="ground" class="ground">再往下，还有落脚点。</div>
+        <div class="contrast-row"><div id="color-probe" class="color-probe" role="img" aria-label="可改变对比度的无边框色块"></div><div class="contrast-copy"><h3>一点色差，改变一块地形。</h3><p>这块区域没有边框，也没有内部文字。降低对比度，看看它是否仍然足够清楚。</p><div class="inline-tools"><button id="contrast-toggle" class="text-button" aria-pressed="false">降低对比度</button><button class="text-button" data-place="color-probe">试着站上去</button></div></div></div>
+      </section>
+
+      <section id="structure" class="chapter" aria-labelledby="structure-title">
+        <div class="chapter-heading"><h2 id="structure-title">结构，也会呼吸。</h2><span class="chapter-label">目录 · 表格 · 表单</span></div>
+        <div class="structure-grid">
+          <div class="directory">
+            <div class="object-heading"><h3>一个小目录</h3><button id="collapse-tree" class="text-button" aria-pressed="false">折叠子目录</button></div>
+            <details id="tree" open><summary>mono-stickfigure /</summary><div class="tree-children"><details id="tree-branch" open><summary>src /</summary><div class="tree-children"><div id="tree-node" class="tree-entry">motion / solver.ts</div><div class="tree-entry">animation / rig.ts</div><div class="tree-entry">perception / text-surfaces.ts</div></div></details><div class="tree-entry">examples /</div><div class="tree-entry">tests /</div><div class="tree-entry">package.json</div></div></details>
+            <div id="tree-floor" class="tree-floor">折叠目录，原来的落脚点就会消失。</div>
+            <button class="text-button" data-place="tree-node">到子节点上 <span aria-hidden="true">↗</span></button>
+          </div>
+          <div class="table-area">
+            <div class="object-heading"><h3>走走停停的几种方式</h3><button class="text-button" data-place="table-cell">到表格上</button></div>
+            <table><thead><tr><th scope="col">动作</th><th scope="col">正在发生什么</th></tr></thead><tbody><tr><td id="table-cell">行走</td><td>交替接触，随距离迈步</td></tr><tr><td>奔跑</td><td>身体前倾，摆臂与提膝</td></tr><tr><td>跳跃</td><td>起跳、收腿，再逐渐伸展</td></tr><tr><td>坠落</td><td>重力加速，寻找下一次接触</td></tr><tr><td>落地</td><td>屈膝缓冲，重新站稳</td></tr><tr><td>招呼</td><td>转向读者，挥挥手</td></tr></tbody></table>
+          </div>
+        </div>
+        <form id="sample-form" class="sample-form">
+          <div class="form-intro"><h3>顺便，留一点自己的想法。</h3><p>人物在页面上活动，你仍然可以输入、选择和点击。</p></div>
+          <fieldset><legend class="sr-only">给漫游者的留言</legend><label for="field-platform">小居民的名字<input id="field-platform" name="name" value="小墨" maxlength="24" /></label><label for="topic">今天想逛哪里<select id="topic" name="topic"><option>字里行间</option><option>目录树</option><option>滚动列表</option></select></label><div class="form-actions"><button id="submit-platform" class="button primary" type="submit">记下选择</button><button class="text-button" type="button" data-place="field-platform">到输入框上</button></div><p id="form-result" class="caption" role="status">给这次漫游取个名字。</p></fieldset>
+        </form>
+      </section>
+
+      <section id="scrolling" class="chapter" aria-labelledby="scrolling-title">
+        <div class="chapter-heading"><h2 id="scrolling-title">世界，不止这一屏。</h2><button class="text-button" data-place="scroll-item">到列表里 <span aria-hidden="true">↗</span></button></div>
+        <div class="scrolling-grid">
+          <div id="scroll-container" class="scroll-container" tabindex="0" aria-label="可以独立滚动的漫游列表"><ol class="scroll-list"><li id="scroll-item"><strong>沿着这一行出发。</strong><span>轻轻滚动，脚下的位置仍然对得上。</span></li><li><strong>下一个落脚点。</strong><span>不必一直向前，转个身也可以。</span></li><li><strong>一个留白的间隙。</strong><span>看清下一步，再跨过去。</span></li><li><strong>暂时离开视野。</strong><span>保留有效的接触，等待再次相遇。</span></li><li><strong>回到原来的地方。</strong><span>先校验，再继续这段行程。</span></li><li><strong>还有一页，和下一页。</strong><span>小小的动静，属于整张网页。</span></li><li><strong>终点，也可以是起点。</strong><span>停一会儿，然后重新出发。</span></li></ol></div>
+          <aside class="visibility-notes"><h3>看得见，才能站得住。</h3><div id="transparent-box" class="transparent-box" aria-label="没有绘制证据的透明空区域"></div><button id="test-transparent" class="text-button">试试这个透明区域</button><p class="caption">没有文字、填充和边框的透明盒子，不会凭空成为地面。</p><details class="diagnostic-details"><summary>当前人物与识别状态</summary><pre id="diagnostics" data-mono-stickfigure>等待第一帧</pre></details></aside>
+        </div>
+      </section>
+
+      <section class="closing" aria-labelledby="closing-title"><h2 id="closing-title">小小一笔，<br />让页面活起来。</h2><p>把下一步留给它自己。或者回到开头，再一起走一段。</p><div class="closing-links"><a class="button" href="#main">回到顶部 <span aria-hidden="true">↑</span></a><button class="text-button" data-place="footer-platform">去最后一行</button></div></section>
     </main>
-    <script type="module" src="./main.ts"></script>
-  </body>
+    <footer id="footer-platform" class="footer"><a class="footer-brand" href="#main">mono.</a><span>原生 TypeScript · MIT</span><span class="caption">识别在本地发生，不上传页面内容。</span></footer>
+  </div>
+  <script type="module" src="./main.ts"></script>
+</body>
 </html>

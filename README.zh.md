@@ -4,29 +4,165 @@
 
 让一个小小的火柴人，把你的网页变成游乐场。
 
-它寻找真实的页面元素作为落脚点，跟随页面滚动和平台移动；脚下的平台消失时，就自然落下。它不会挡住页面交互，按钮仍然可以点击，页面照常滚动。
+框架无关的原生 TypeScript 工具包，没有运行时第三方依赖。人物寻找真实 DOM 的绘制平台，沿可达路线走跑、跳跃，跟随滚动和平台移动；支撑消失后自然下落。局部小型 Canvas 不阻挡点击、文字选择或页面滚动。
 
 ## 体验预览版
 
+使用 Node.js `^22.18.0 || ^24.11.0 || >=26.0.0` 和 npm：
+
 ```sh
-npm install
+npm ci
 npm run build
 npm run dev
 ```
 
-打开[实验场](http://127.0.0.1:5173/examples/)，让火柴人跳一跳，移动它的平台，或突然隐藏它脚下的面板。
+打开[实验场](http://127.0.0.1:5173/examples/)，或用[手动模式](http://127.0.0.1:5173/examples/?mode=manual)观察动作，避免自主决策接着移动。
 
-## 当前可以体验
+演示导入 `dist/index.mjs`。修改库源码后需要重新构建，或另开终端运行 `npm run build:watch`。开发服务使用固定端口，5173 被占用时不会自动换端口。
 
-- 站在页面元素可见的实线边框上。
-- 跟随页面滚动和平台移动。
-- 用实时绘制的小型火柴人完成跳跃、坠落与落地。
-- 设置大小、颜色、线宽和头型。
-- 暂停、恢复或移除人物，不阻碍原有页面。
+当前是未发布的早期预览版（`private: true`），不是完整首版。下文包名导入用于本地包或 tarball 安装后的消费；仓库演示直接导入构建文件，尚不能从 npm 安装公开版本。
 
-核心完全在本地运行，不截图、不上传页面内容。
+## 当前能力
 
-目前是早期预览版，并非完整发布版。文字平台、完整的动作与触发、复杂绘制的扩展接入还在做，尚未发布到 npm。
+- 识别可见实线上边框、有色差的纯色填充块，包括无边框按钮。
+- 普通文字采用字墨顶部度量近似；大号水平、从左到右的文字采用局部字形顶部轮廓近似。
+- 默认 18 CSS px 的单色侧向人物。
+- 行走、跑步、冲刺、转身、招呼、蹲下、叉腰休息、趴下和起身。
+- 重力驱动的跳跃、跑跳、助跑远跳、坠落、落地缓冲；冲击较大且空间足够时衔接翻滚。
+- 元素、已识别平台、页面坐标目标；支持取消请求与有界路线规划。
+- 平台相对锚点、滚动与受支持的平移跟随、动态失效、暂停恢复及资源释放。
+
+核心不截取页面、不联网识别、不上传页面内容。大字识别只在本地重绘字形，并非页面截图；演示页本身会加载网络字体。
+
+## 基本用法
+
+在页面和目标元素挂载后启动。`#runway` 需要具有实际可见、足够宽的边框、填充或文字落脚点。
+
+```ts
+import { createStickFigure } from 'mono-stickfigure';
+
+const figure = createStickFigure({
+  autonomous: false,
+  appearance: { height: 18, color: '#181818', lineWidth: 1.2 },
+  recognition: { colorTolerance: 0.01 },
+});
+
+await document.fonts.ready;
+const started = await figure.start();
+const runway = document.querySelector<HTMLElement>('#runway');
+
+if (started.status !== 'paused' && runway) {
+  const placed = await figure.place(runway);
+  if (placed.status === 'placed') {
+    const result = await figure.requestAction('run-jump', { direction: 1 });
+    console.log(result);
+  }
+}
+```
+
+`place()` 在测量后显式重新定位人物，本身是瞬时放置。需要实际走过去时使用 `moveTo()`，不能连续调用 `place()` 代替运动。
+
+## 目标与取消
+
+```ts
+const destination = document.querySelector<HTMLElement>('#destination');
+const controller = new AbortController();
+
+if (destination) {
+  const moving = figure.moveTo(destination, {
+    pace: 'run',
+    signal: controller.signal,
+  });
+  const cancelButton = document.querySelector<HTMLButtonElement>('#cancel');
+  const cancel = () => controller.abort();
+  cancelButton?.addEventListener('click', cancel, { once: true });
+  const result = await moving;
+  cancelButton?.removeEventListener('click', cancel);
+  console.log(result);
+}
+```
+
+已发现的平台可以使用 `{ surfaceId, u }`，其中 `u` 是沿顶部线段的归一化位置。Surface ID 属于当前实例，不是可持久化的 DOM 元素 ID。
+
+页面坐标示例：
+
+```ts
+const result = await figure.moveTo(
+  { position: { x: 640, y: 900 }, coordinateSpace: 'document' },
+  { pace: 'walk' },
+);
+```
+
+坐标目标只在已知有效平台中选择邻近可站点，不会生成地面。省略 `coordinateSpace` 时使用客户区/视口 CSS 像素。`pace` 控制平台上的行进速度，跨越间隔时仍可能需要更快的助跑。
+
+取消返回 `interrupted / aborted`，不会冻结或瞬移空中的人物，物理仍继续到接触。地面移动先制动，翻滚从当前姿态恢复。`autonomous: false` 只关闭自主决策，不取消跑跳等动作的续跑阶段；需要收敛到静止时，在落地后请求 `idle`。
+
+## 公共 API
+
+| 方法 | 行为 |
+| --- | --- |
+| `start()` | 返回 `ready / empty / paused` 及 `supportedActions`；重复调用复用启动 Promise。 |
+| `place(target)` | 返回 `placed / rejected`；目标有效时取消已有动作和移动请求。用户暂停时也可放置，但不会自动恢复。 |
+| `moveTo(target, { pace, signal }?)` | 规划真实运动；`pace` 为 `walk / run / sprint`。 |
+| `requestAction(id, { target, direction, duration, signal }?)` | 请求支持的动作；方向为 `1`（右）或 `-1`（左）。 |
+| `setAutonomous(enabled)` | 开关自主决策，不停止空中物理。 |
+| `pause()` / `resume()` | 增加/清除用户暂停原因，其他暂停原因独立保留。 |
+| `on(event, listener)` | 返回取消订阅函数。 |
+| `getSnapshot()` | 返回状态值副本；只有 `debug: true` 才提供 `surfaces`。 |
+| `destroy()` | 幂等释放资源并中断请求；重新启动需要创建新实例。 |
+
+动作/移动结果为 `{ status: 'completed' | 'rejected' | 'interrupted', reason?: string }`。Promise 正常返回不代表动作成功，需检查 `status`。常见原因包括 `unreachable`、`target-invalid`、`support-invalid`、`insufficient-space`、`obstructed`、`edge`、`boundary`、`replaced` 和 `aborted`。非法创建配置会抛错；缺少浏览器或挂载条件不满足时 `start()` 会拒绝。
+
+当前 16 个可请求动作：
+
+```text
+idle, walk, run, sprint, turn,
+wave, crouch, rest, prone, stand-up,
+jump, run-jump, running-long-jump, fall, land-soft, roll
+```
+
+`anticipate` 和 `brake` 是可在快照/事件中观察的内部过渡状态，不能直接请求。反向跳先制动并转身。带目标的跳跃是一次跳跃请求，必要时包含助跑；多步路线使用 `moveTo()`。
+
+`duration` 单位为秒，只控制有时长的移动/姿态阶段，不是整个 Promise 的总耗时。范围为 0.1–10，翻滚为 0.65–10。跳跃和坠落由物理决定结束；过渡和落地恢复会增加时间，跑跳/远跳完成后可能继续原来的移动。
+
+事件为 `ready`、`statechange`、`actionchange`、`surfacechange`、`targetchange`、`boundary` 和 `error`：
+
+```ts
+const unsubscribe = figure.on('actionchange', ({ action }) => {
+  console.log(action);
+});
+
+figure.setAutonomous(true);
+figure.pause();
+figure.resume();
+unsubscribe();
+figure.destroy();
+```
+
+其他创建默认值：重力 `980` CSS px/s²、跳高 `52` CSS px、扫描预算 `2` ms、平台缓存上限 `1500`、DPR 上限 `2`、开启自主决策、尊重系统减少动态效果偏好。当前没有运行时外观/物理/识别设置方法，修改这些配置需销毁后重新创建。
+
+## 能力边界
+
+- 色差采用局部重建的合成色和 OKLab，默认 `colorTolerance: 0.01`。前后景同色不构成平台证据；无法可靠合成的复杂绘制可能保持未知。
+- 边框和文字是单向顶部支撑；填充块还提供保守实体边界，参与侧撞和顶头。翻滚仍使用完整人物高度检查碰撞空间。
+- 文字近似不是精确页面像素。图片内部、任意 SVG path、滤镜、mask 和复杂裁剪不自动识别。
+- 导航是已知候选上的有界 Dijkstra，不是 A*，也不是全页完备搜索。目标可以不可达；起跳后移动的平台不保证落中。
+- 滚动导致支撑离屏时保留锚点、隐藏暂停；未知支撑等待验证，明确移除或不可见时释放接触。
+- 默认边界循环会在空中人物从两侧或下方离开视口时中断当前请求；向上跳不会传送到底部。关闭循环则在画外等待，不生成虚构地板。
+- 导入和创建实例支持 SSR；只有 `start()` 需要浏览器。当前 `/core` 与默认入口创建同一个 Controller。
+- Provider/动作/触发注册、自动 Shadow DOM 遍历、SVG 平台提取和 `/presets` 尚未实现；可以显式指定 `ShadowRoot` 为扫描根。24 动作、20 类触发与完整五场景验收仍是首版目标。
+
+## 开发与文档
+
+```sh
+npm run typecheck
+npm test -- tests/unit/motion.test.ts
+npm run test:browser
+```
+
+类型检查覆盖库、演示、测试和根目录配置。浏览器检查需要先构建，并使用本机安装的 Microsoft Edge；已有测试并不代表每项新增预览行为都有自动化覆盖。
+
+详见[当前 API 与设计边界](docs/02-详细设计.md#11-公共-api-与扩展契约)、[实施与验证记录](docs/03-实施与验收计划.md)和[开发架构](CLAUDE.md)。设计文档区分可用接口与拟定扩展契约；手机尺寸模拟和小型绘制采样不是真机或完整性能验收。
 
 ## 许可证
 

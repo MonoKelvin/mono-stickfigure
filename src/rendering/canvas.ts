@@ -41,19 +41,31 @@ export class CanvasRenderer {
     ctx.lineWidth = this.appearance.lineWidth;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
+    ctx.globalAlpha = 1;
     ctx.beginPath();
     for (const [from, to] of BONES) {
-      if (from === JOINT.head) continue;
       ctx.moveTo(pose.joints[from * 2]!, pose.joints[from * 2 + 1]!);
       ctx.lineTo(pose.joints[to * 2]!, pose.joints[to * 2 + 1]!);
     }
+    const direction = pose.facingScale;
+    for (const [index, foot] of [JOINT.leftFoot, JOINT.rightFoot].entries()) {
+      const x = pose.joints[foot * 2]!;
+      const y = pose.joints[foot * 2 + 1]!;
+      const angle = pose.footAngles[index]!;
+      const dx = Math.cos(angle) * this.appearance.height;
+      const dy = Math.sin(angle) * this.appearance.height;
+      ctx.moveTo(x - direction * dx * 0.035, y - dy * 0.035);
+      ctx.lineTo(x + direction * dx * 0.075, y + dy * 0.075);
+    }
     ctx.stroke();
+
     const x = pose.joints[JOINT.head * 2]!;
     const y = pose.joints[JOINT.head * 2 + 1]!;
     ctx.beginPath();
     if (this.appearance.head === 'circle') ctx.arc(x, y, pose.headRadius, 0, Math.PI * 2);
     else ctx.rect(x - pose.headRadius, y - pose.headRadius, pose.headRadius * 2, pose.headRadius * 2);
-    ctx.stroke();
+    ctx.fillStyle = this.appearance.color;
+    ctx.fill();
     this.element.style.transform = `translate(${root.x - center}px, ${root.y - this.size * 0.65}px)`;
   }
 

@@ -30,7 +30,7 @@ test('连续创建销毁 100 次不残留帧任务、观察器和画布', async 
     const entry = '/dist/index.mjs';
     const { createStickFigure } = await import(entry) as typeof import('../../src/index');
     for (let i = 0; i < 100; i++) {
-      const actor = createStickFigure({ root: document.getElementById('playground')!, seed: i });
+      const actor = createStickFigure({ root: document, seed: i });
       await actor.start();
       actor.destroy();
     }

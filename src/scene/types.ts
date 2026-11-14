@@ -10,17 +10,25 @@ export interface Interval {
 
 export type SurfaceStatus = 'valid' | 'offscreen' | 'unknown' | 'invalid';
 
+export interface SurfaceBounds {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
 export interface SurfaceSnapshot {
   id: string;
   sourceId: string;
   sourceRevision: number;
   geometryVersion: number;
-  kind: 'border';
+  kind: 'border' | 'fill' | 'text';
   a: Point;
   b: Point;
   available: readonly Interval[];
+  bounds?: SurfaceBounds;
   status: SurfaceStatus;
-  evidence: 'dom-painted-edge';
+  evidence: 'dom-painted-edge' | 'dom-fill' | 'text-metric' | 'text-contour';
 }
 
 export interface Anchor {

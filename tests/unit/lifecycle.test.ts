@@ -19,7 +19,22 @@ describe('无 DOM 的入口与生命周期', () => {
     await expect(actor.start()).rejects.toThrow('DESTROYED');
   });
 
+  it('默认人物更小且重力不会随外观大小改变', () => {
+    const small = createStickFigure({ appearance: { height: 16 } });
+    const large = createStickFigure({ appearance: { height: 40 } });
+    const defaults = createStickFigure();
+    expect(defaults.getSnapshot().appearance.height).toBe(24);
+    expect(defaults.getSnapshot().autonomous).toBe(true);
+    expect(small.getSnapshot().physics).toEqual(large.getSnapshot().physics);
+    expect(defaults.getSnapshot().physics).toEqual({ gravity: 980, jumpHeight: 52 });
+    defaults.setAutonomous(false);
+    expect(defaults.getSnapshot().autonomous).toBe(false);
+    for (const actor of [small, large, defaults]) actor.destroy();
+  });
+
   it('配置边界拒绝非有限值', () => {
+    expect(() => createStickFigure({ physics: { gravity: 0 } })).toThrow();
+    expect(() => createStickFigure({ physics: { jumpHeight: Infinity } })).toThrow();
     expect(() => createStickFigure({ appearance: { height: NaN } })).toThrow();
     expect(() => createStickFigure({ performance: { maxSurfaces: 1.5 } })).toThrow();
     expect(() => createStickFigure({ seed: Infinity })).toThrow();

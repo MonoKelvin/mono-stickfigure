@@ -19,7 +19,7 @@ test.beforeEach(async ({ page }) => {
   errors.set(page, messages);
   page.on('pageerror', (error) => messages.push(error.message));
   await page.emulateMedia({ reducedMotion: 'no-preference' });
-  await page.goto('/examples/');
+  await page.goto('/examples/?mode=manual');
   await page.evaluate(() => window.demoReady);
   await expect.poll(async () => (await snapshot(page)).status).toBe('running');
 });
@@ -36,15 +36,16 @@ test('真实边框生成平台，小画布不截获事件', async ({ page }) => 
   await expect(canvas).toHaveCount(1);
   await expect(canvas).toHaveCSS('pointer-events', 'none');
   const size = await canvas.boundingBox();
-  expect(size!.width).toBe(108);
-  await page.getByRole('button', { name: '站到按钮顶部' }).click();
+  expect(size!.width).toBe(current.appearance.height * 3);
+  expect(current.appearance.height).toBe(24);
+  await page.locator('#place-button').click();
   await page.locator('#landing').click();
   await expect(page.locator('#clicks')).toHaveText('1');
 });
 
 test('起跳和落地使用真实平台，根位置不瞬移', async ({ page }) => {
   const before = await snapshot(page);
-  await page.getByRole('button', { name: '原地跳跃' }).click();
+  await page.locator('#jump').click();
   await expect.poll(async () => (await snapshot(page)).position!.y).toBeLessThan(before.position!.y - 8);
   await expect.poll(async () => (await snapshot(page)).action, { timeout: 5000 }).toBe('idle');
   const after = await snapshot(page);
@@ -59,7 +60,7 @@ test('隐藏脚下面板后立即释放接触并落在下方平台', async ({ pa
   await expect.poll(async () => (await snapshot(page)).support?.surfaceId).not.toBe(before.support!.surfaceId);
   await expect.poll(async () => (await snapshot(page)).action, { timeout: 5000 }).toBe('idle');
   const after = await snapshot(page);
-  const groundY = await page.locator('#ground').evaluate((node) => node.getBoundingClientRect().top + 1);
+  const groundY = await page.locator('#ground').evaluate((node) => node.getBoundingClientRect().top + Number.parseFloat(getComputedStyle(node).borderTopWidth) / 2);
   expect(after.position!.y).toBeCloseTo(groundY, 1);
   expect(after.support).not.toBeNull();
 });
@@ -125,4 +126,143 @@ test('快照是值副本，不能从外部改写人物坐标', async ({ page }) 
     return actor.getSnapshot().position!.x === x;
   });
   expect(unchanged).toBe(true);
+});
+
+test('默认自由活动产生连续随机行走，关闭后制动且暂停不漂移', async ({ page }) => {
+  await page.goto('/examples/');
+  await page.evaluate(() => window.demoReady);
+  expect((await snapshot(page)).autonomous).toBe(true);
+  await page.waitForFunction(() => window.mono.getSnapshot().action === 'walk');
+  const samples = await page.evaluate(async () => {
+    const samples: { x: number; support: string | undefined }[] = [];
+    for (let i = 0; i < 70; i++) {
+      await new Promise(requestAnimationFrame);
+      const state = window.mono.getSnapshot();
+      samples.push({ x: state.position!.x, support: state.support?.surfaceId });
+    }
+    return samples;
+  });
+  expect(Math.abs(samples.at(-1)!.x - samples[0]!.x)).toBeGreaterThan(20);
+  expect(samples.every((sample) => sample.support === samples[0]!.support)).toBe(true);
+  expect(samples.slice(1).every((sample, i) => Math.abs(sample.x - samples[i]!.x) < 6)).toBe(true);
+  await page.locator('#autonomy').click();
+  await expect.poll(async () => Math.abs((await snapshot(page)).velocity.x)).toBe(0);
+  expect((await snapshot(page)).autonomous).toBe(false);
+  await page.locator('#pause').click();
+  const stopped = (await snapshot(page)).position;
+  await page.evaluate(async () => { for (let i = 0; i < 20; i++) await new Promise(requestAnimationFrame); });
+  expect((await snapshot(page)).position).toEqual(stopped);
+});
+
+test('真实跳跃逐帧符合恒定重力公式并回到原支撑', async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const before = window.mono.getSnapshot();
+    const action = window.mono.requestAction('jump');
+    const samples: { y: number; vy: number; airborne: boolean }[] = [];
+    for (let i = 0; i < 100; i++) {
+      await new Promise(requestAnimationFrame);
+      const state = window.mono.getSnapshot();
+      samples.push({ y: state.position!.y, vy: state.velocity.y, airborne: !state.support });
+      if (i > 10 && state.action === 'idle') break;
+    }
+    return { before, samples, action: await action, after: window.mono.getSnapshot() };
+  });
+  const gravity = result.before.physics.gravity;
+  const upward = Math.sqrt(2 * gravity * result.before.physics.jumpHeight);
+  const air = result.samples.filter((sample) => sample.airborne);
+  expect(air.some((sample) => sample.vy < 0)).toBe(true);
+  expect(air.some((sample) => sample.vy > 0)).toBe(true);
+  for (const sample of air) {
+    const time = (sample.vy + upward) / gravity;
+    expect(sample.y).toBeCloseTo(result.before.position!.y - upward * time + gravity * time ** 2 / 2, 5);
+  }
+  expect(result.before.position!.y - Math.min(...air.map((sample) => sample.y))).toBeCloseTo(52, 0);
+  expect(result.action.status).toBe('completed');
+  expect(result.after.support?.surfaceId).toBe(result.before.support?.surfaceId);
+});
+
+test('手动行走在真实边缘停止，不越过脚部支撑范围', async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const actor = window.mono;
+    const id = actor.getSnapshot().support!.surfaceId;
+    await actor.place({ surfaceId: id, u: 0.98 });
+    const action = await actor.requestAction('walk', { direction: 1, duration: 2 });
+    return { action, state: actor.getSnapshot() };
+  });
+  const surface = result.state.surfaces.find((surface) => surface.id === result.state.support!.surfaceId)!;
+  expect(result.action).toEqual({ status: 'completed', reason: 'edge' });
+  expect(result.state.velocity.x).toBe(0);
+  expect(result.state.position!.x).toBeLessThanOrEqual(surface.b.x - result.state.appearance.height * 0.26 + 1e-6);
+});
+
+test('整页的文章、表格、树、表单、滚动条目和页眉页脚都可定位', async ({ page }) => {
+  for (const id of ['article-platform', 'table-cell', 'tree-node', 'field-platform', 'scroll-item', 'footer-platform', 'header-platform']) {
+    await page.locator(`#${id}`).scrollIntoViewIfNeeded();
+    const result = await page.evaluate(async (id) => {
+      const target = document.getElementById(id)!;
+      await new Promise(requestAnimationFrame);
+      return window.mono.place(target);
+    }, id);
+    expect(result.status, id).toBe('placed');
+    expect((await snapshot(page)).support, id).not.toBeNull();
+  }
+});
+
+test('折叠真实目录使仍连接的子节点失去支撑并自然落下', async ({ page }) => {
+  await page.locator('[data-place="tree-node"]').click();
+  await expect.poll(async () => (await snapshot(page)).status).toBe('running');
+  const before = await snapshot(page);
+  await page.locator('#collapse-tree').click();
+  expect(await page.locator('#tree-node').evaluate((node) => node.isConnected)).toBe(true);
+  await expect.poll(async () => (await snapshot(page)).support?.surfaceId).not.toBe(before.support!.surfaceId);
+  await expect.poll(async () => (await snapshot(page)).action, { timeout: 5000 }).toBe('idle');
+  expect((await snapshot(page)).support).not.toBeNull();
+});
+
+test('嵌套滚动保留相对接触，离屏暂停后能恢复', async ({ page }) => {
+  await page.locator('[data-place="scroll-item"]').click();
+  await expect.poll(async () => (await snapshot(page)).status).toBe('running');
+  const before = await snapshot(page);
+  await page.locator('#scroll-container').evaluate((node) => { node.scrollTop = 20; });
+  await expect.poll(async () => (await snapshot(page)).position!.y).toBeCloseTo(before.position!.y - 20, 1);
+  expect((await snapshot(page)).support?.surfaceId).toBe(before.support!.surfaceId);
+  await page.locator('#scroll-container').evaluate((node) => { node.scrollTop = 300; });
+  await expect.poll(async () => (await snapshot(page)).pauses).toContain('offscreen');
+  await page.locator('#scroll-container').evaluate((node) => { node.scrollTop = 0; });
+  await expect.poll(async () => (await snapshot(page)).status).toBe('running');
+  expect((await snapshot(page)).support?.surfaceId).toBe(before.support!.surfaceId);
+});
+
+test('手机宽度下移动面板不产生水平溢出，大小与重力控件可用', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator('#move').click();
+  const overflow = await page.evaluate(async () => {
+    for (let i = 0; i < 100; i++) {
+      await new Promise(requestAnimationFrame);
+      if (document.documentElement.scrollWidth > innerWidth) return true;
+    }
+    return false;
+  });
+  expect(overflow).toBe(false);
+  await page.locator('#size').press('Home');
+  await page.evaluate(() => window.demoReady);
+  await page.locator('#size').press('ArrowRight');
+  await page.evaluate(() => window.demoReady);
+  await expect.poll(async () => (await snapshot(page)).appearance.height).toBe(18);
+  await expect(page.locator('canvas[data-mono-stickfigure]')).toHaveCSS('width', '54px');
+  await page.locator('#gravity').selectOption('490');
+  await page.evaluate(() => window.demoReady);
+  expect((await snapshot(page)).physics).toEqual({ gravity: 490, jumpHeight: 52 });
+});
+
+test('宿主表单正常提交，reduced-motion 下不进行自由行走', async ({ page }) => {
+  await page.locator('#field-platform').fill('小白');
+  await page.locator('#submit-platform').click();
+  await expect(page.locator('#form-result')).toContainText('小白');
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.locator('#autonomy').click();
+  await expect.poll(async () => (await snapshot(page)).status).toBe('running');
+  await expect.poll(async () => (await snapshot(page)).action).toBe('idle');
+  const action = await page.evaluate(() => window.mono.requestAction('walk'));
+  expect(action).toEqual({ status: 'rejected', reason: 'reduced-motion' });
 });
