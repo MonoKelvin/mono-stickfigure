@@ -8,6 +8,18 @@ export class CanvasRenderer {
   private readonly context: CanvasRenderingContext2D;
   private readonly size: number;
   private dpr = 0;
+  private visible = false;
+  private rootX = Number.NaN;
+  private rootY = Number.NaN;
+  private readonly drawnJoints = new Float64Array(24);
+  private readonly drawnFootAngles = new Float64Array(2);
+  private drawn = false;
+  private drawnFacingScale = 0;
+  private drawnHeadRadius = 0;
+  private drawnColor = '';
+  private drawnLineWidth = 0;
+  private drawnHeight = 0;
+  private drawnHead: Appearance['head'] | undefined;
 
   constructor(private readonly doc: Document, mount: HTMLElement, private readonly appearance: Appearance, private readonly maxDpr: number) {
     this.size = Math.ceil(appearance.height * 3);
@@ -26,29 +38,52 @@ export class CanvasRenderer {
   }
 
   draw(root: Point, pose: Pose): void {
+    const center = this.size / 2;
+    const baseline = this.size * 0.65;
+    // Keep subpixel client coordinates intact; moving the existing bitmap does
+    // not require repainting an unchanged pose or rewriting an unchanged style.
+    if (root.x !== this.rootX || root.y !== this.rootY) {
+      this.element.style.transform = `translate(${root.x - center}px, ${root.y - baseline}px)`;
+      this.rootX = root.x;
+      this.rootY = root.y;
+    }
     const dpr = Math.min(this.doc.defaultView!.devicePixelRatio || 1, this.maxDpr);
-    if (dpr !== this.dpr) {
+    const ctx = this.context;
+    const resized = dpr !== this.dpr;
+    if (resized) {
       this.dpr = dpr;
       this.element.width = Math.ceil(this.size * dpr);
       this.element.height = Math.ceil(this.size * dpr);
+      // Resizing resets the context. The local root transform and invariant
+      // drawing state otherwise survive clearRect and can be reused each frame.
+      ctx.setTransform(dpr, 0, 0, dpr, center * dpr, baseline * dpr);
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.globalAlpha = 1;
     }
-    const ctx = this.context;
-    const center = this.size / 2;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, this.size, this.size);
-    ctx.translate(center, this.size * 0.65);
-    ctx.strokeStyle = this.appearance.color;
-    ctx.lineWidth = this.appearance.lineWidth;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.globalAlpha = 1;
+    const appearanceChanged = this.drawnColor !== this.appearance.color || this.drawnLineWidth !== this.appearance.lineWidth
+      || this.drawnHeight !== this.appearance.height || this.drawnHead !== this.appearance.head;
+    let poseChanged = !this.drawn || this.drawnFacingScale !== pose.facingScale || this.drawnHeadRadius !== pose.headRadius;
+    for (let i = 0; !poseChanged && i < this.drawnJoints.length; i++) poseChanged = this.drawnJoints[i] !== pose.joints[i];
+    for (let i = 0; !poseChanged && i < this.drawnFootAngles.length; i++) poseChanged = this.drawnFootAngles[i] !== pose.footAngles[i];
+    if (!resized && !appearanceChanged && !poseChanged) return;
+
+    // The canvas is already character-sized (3h by 3h), so clearing that small
+    // bitmap is simpler and safer than changing crop bounds as limbs/rolls move.
+    ctx.clearRect(-center, -baseline, this.size, this.size);
+    if (resized || this.drawnColor !== this.appearance.color) {
+      ctx.strokeStyle = this.appearance.color;
+      ctx.fillStyle = this.appearance.color;
+    }
+    if (resized || this.drawnLineWidth !== this.appearance.lineWidth) ctx.lineWidth = this.appearance.lineWidth;
     ctx.beginPath();
     for (const [from, to] of BONES) {
       ctx.moveTo(pose.joints[from * 2]!, pose.joints[from * 2 + 1]!);
       ctx.lineTo(pose.joints[to * 2]!, pose.joints[to * 2 + 1]!);
     }
     const direction = pose.facingScale;
-    for (const [index, foot] of [JOINT.leftFoot, JOINT.rightFoot].entries()) {
+    for (let index = 0; index < 2; index++) {
+      const foot = index === 0 ? JOINT.leftFoot : JOINT.rightFoot;
       const x = pose.joints[foot * 2]!;
       const y = pose.joints[foot * 2 + 1]!;
       const angle = pose.footAngles[index]!;
@@ -64,13 +99,23 @@ export class CanvasRenderer {
     ctx.beginPath();
     if (this.appearance.head === 'circle') ctx.arc(x, y, pose.headRadius, 0, Math.PI * 2);
     else ctx.rect(x - pose.headRadius, y - pose.headRadius, pose.headRadius * 2, pose.headRadius * 2);
-    ctx.fillStyle = this.appearance.color;
     ctx.fill();
-    this.element.style.transform = `translate(${root.x - center}px, ${root.y - this.size * 0.65}px)`;
+    // Copy values, not references: the animation sampler mutates Pose in place.
+    this.drawnJoints.set(pose.joints);
+    this.drawnFootAngles.set(pose.footAngles);
+    this.drawnFacingScale = pose.facingScale;
+    this.drawnHeadRadius = pose.headRadius;
+    this.drawnColor = this.appearance.color;
+    this.drawnLineWidth = this.appearance.lineWidth;
+    this.drawnHeight = this.appearance.height;
+    this.drawnHead = this.appearance.head;
+    this.drawn = true;
   }
 
   setVisible(visible: boolean): void {
+    if (visible === this.visible) return;
     this.element.style.display = visible ? 'block' : 'none';
+    this.visible = visible;
   }
 
   destroy(): void {

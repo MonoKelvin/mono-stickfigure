@@ -13,6 +13,16 @@ interface SourceRecord {
   clippedByAncestor: boolean;
 }
 
+interface RefreshMeasurement {
+  snapshot: SurfaceSnapshot;
+  box: readonly [number, number, number, number];
+  measuredAt: number;
+}
+
+// Perception is sampled independently from 120 Hz physics / display-rate rendering.
+// Geometry and explicit scene invalidation still bypass this short reuse window.
+const REFRESH_REUSE_MS = 50;
+
 export class SurfaceStore {
   private readonly records = new Map<string, SourceRecord>();
   private readonly ids = new WeakMap<Node, string>();
@@ -26,6 +36,10 @@ export class SurfaceStore {
   private rescan = true;
   private nextScanAt = 0;
   private frameViewport: Viewport | null = null;
+  private frameTime = 0;
+  private readonly refreshMeasurements = new Map<string, RefreshMeasurement>();
+  private nearbyKeys: string[] | null = null;
+  private nearbyCursor = 0;
   private readonly elementMeasurements = new Map<Element, string | null>();
   private readonly textMeasurements = new Map<Text, Map<string, string[]>>();
   readonly pinned = new Set<string>();
@@ -37,7 +51,10 @@ export class SurfaceStore {
   }
 
   beginFrame(viewport: Viewport): void {
+    const old = this.frameViewport;
+    if (!old || old.left !== viewport.left || old.top !== viewport.top || old.right !== viewport.right || old.bottom !== viewport.bottom) this.refreshMeasurements.clear();
     this.frameViewport = viewport;
+    this.frameTime = performance.now();
     this.elementMeasurements.clear();
     this.textMeasurements.clear();
     this.measuredElements = 0;
@@ -45,6 +62,7 @@ export class SurfaceStore {
 
   invalidate(): void {
     this.rescan = true;
+    this.refreshMeasurements.clear();
     this.elementMeasurements.clear();
     this.textMeasurements.clear();
   }
@@ -79,7 +97,11 @@ export class SurfaceStore {
         this.walker = null;
         this.nextScanAt = performance.now() + 500;
         for (const [id, record] of this.records) {
-          if ((!record.node.isConnected || record.snapshot.status === 'invalid') && !this.pinned.has(id)) this.records.delete(id);
+          if ((!record.node.isConnected || record.snapshot.status === 'invalid') && !this.pinned.has(id)) {
+            this.records.delete(id);
+            this.refreshMeasurements.delete(id);
+            this.nearbyKeys = null;
+          }
         }
         break;
       }
@@ -100,8 +122,10 @@ export class SurfaceStore {
     this.measuredElements++;
     const knownId = this.ids.get(element);
     const previous = knownId ? this.get(knownId) : null;
-    const border = measureBorder(element, viewport, this.colorTolerance);
     const fill = measureFill(element, viewport, this.colorTolerance);
+    // Valid fills already win over borders below; avoid a second expensive
+    // painted-edge measurement whose result could never be selected.
+    const border = fill?.status === 'valid' ? null : measureBorder(element, viewport, this.colorTolerance);
     const measured = fill?.status === 'valid' ? fill : border?.status === 'valid' ? border
       : previous?.kind === 'border' && border ? border
       : previous?.kind === 'fill' && fill ? fill
@@ -111,7 +135,10 @@ export class SurfaceStore {
       const id = this.sourceId(element);
       snapshot = this.commit(id, id, element, element, measured);
     } else snapshot = knownId ? this.invalidateRecord(knownId) : null;
-    if (cached) this.elementMeasurements.set(element, snapshot?.id ?? null);
+    if (cached) {
+      this.elementMeasurements.set(element, snapshot?.id ?? null);
+      if (snapshot) this.rememberRefresh(snapshot, element);
+    }
     return snapshot;
   }
 
@@ -177,6 +204,7 @@ export class SurfaceStore {
       const groups = measurements ?? new Map<string, string[]>();
       groups.set(group, [...ids]);
       if (!measurements) this.textMeasurements.set(node, groups);
+      for (const snapshot of snapshots) this.rememberRefresh(snapshot, node.parentElement!);
     }
     return snapshots;
   }
@@ -199,7 +227,10 @@ export class SurfaceStore {
       const victim = [...this.records.keys()].find((key) => !this.pinned.has(key));
       if (!victim) return null;
       this.records.delete(victim);
+      this.refreshMeasurements.delete(victim);
+      this.nearbyKeys = null;
     }
+    if (!previous) this.nearbyKeys = null;
     this.records.set(id, { element, node, snapshot, clippedByAncestor: measured.clippedByAncestor, ...(part ? { part, textRevision } : {}) });
     return snapshot;
   }
@@ -207,13 +238,28 @@ export class SurfaceStore {
   private invalidateRecord(id: string): SurfaceSnapshot | null {
     const record = this.records.get(id);
     if (!record) return null;
+    this.refreshMeasurements.delete(id);
     if (record.snapshot.status !== 'invalid') record.snapshot = { ...record.snapshot, status: 'invalid', available: [], geometryVersion: record.snapshot.geometryVersion + 1 };
     return record.snapshot;
+  }
+
+  private rememberRefresh(snapshot: SurfaceSnapshot, element: Element): void {
+    if (snapshot.status !== 'valid' && snapshot.status !== 'offscreen') return;
+    const box = element.getBoundingClientRect();
+    this.refreshMeasurements.set(snapshot.id, { snapshot, box: [box.left, box.top, box.width, box.height], measuredAt: this.frameTime });
   }
 
   refresh(id: string, viewport: Viewport): SurfaceSnapshot | null {
     const record = this.records.get(id);
     if (!record) return null;
+    if (!record.node.isConnected) return this.invalidateRecord(id);
+    const cached = this.refreshMeasurements.get(id);
+    if (viewport === this.frameViewport && cached?.snapshot === record.snapshot && this.frameTime - cached.measuredAt < REFRESH_REUSE_MS) {
+      const box = record.element.getBoundingClientRect();
+      if (box.left === cached.box[0] && box.top === cached.box[1] && box.width === cached.box[2] && box.height === cached.box[3]) return record.snapshot;
+      this.elementMeasurements.delete(record.element);
+      if (record.part) this.textMeasurements.delete(record.node as Text);
+    }
     if (record.part) {
       this.measureTextPart(record.node as Text, record.part, viewport);
       return this.records.get(id)?.snapshot ?? null;
@@ -221,18 +267,28 @@ export class SurfaceStore {
     return this.measure(record.element, viewport);
   }
 
-  refreshNearby(point: Point, radius: number, viewport: Viewport): void {
+  refreshNearby(point: Point, radius: number, viewport: Viewport, budgetMs = Infinity): void {
+    if (!(budgetMs > 0)) return;
+    const started = performance.now();
+    const keys = this.nearbyKeys ??= [...this.records.keys()];
     let count = 0;
     const seen = new Set<string>();
-    for (const [id, record] of this.records) {
+    for (let visited = 0; visited < keys.length; visited++) {
+      if (performance.now() - started >= budgetMs) break;
+      const id = keys[this.nearbyCursor++ % keys.length]!;
+      const record = this.records.get(id);
+      if (!record) continue;
       const { a, b, sourceId } = record.snapshot;
       if (point.x + radius < a.x || point.x - radius > b.x || Math.abs(point.y - a.y) > radius) continue;
       const key = record.part ? `${sourceId}:${record.part.start}:${record.part.end}` : id;
       if (seen.has(key)) continue;
       seen.add(key);
       this.refresh(id, viewport);
-      if (++count >= 32) break;
+      // A single DOM measurement cannot be preempted; never start another after
+      // its budget is spent. The cursor gives later surfaces a turn next frame.
+      if (++count >= 32 || performance.now() - started >= budgetMs) break;
     }
+    if (keys.length) this.nearbyCursor %= keys.length;
   }
 
   get(id: string): SurfaceSnapshot | null {
@@ -257,6 +313,9 @@ export class SurfaceStore {
     this.elementMeasurements.clear();
     this.textMeasurements.clear();
     this.frameViewport = null;
+    this.refreshMeasurements.clear();
+    this.nearbyKeys = null;
+    this.nearbyCursor = 0;
     this.walker = null;
     this.first = null;
     this.pendingText = null;

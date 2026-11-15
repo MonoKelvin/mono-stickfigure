@@ -14,7 +14,8 @@ export interface TextMeasurement extends SurfaceMeasurement {
 }
 
 interface TextState {
-  signature: number;
+  source: string;
+  font: string;
   revision: number;
   parts: readonly TextPart[];
 }
@@ -50,11 +51,9 @@ export class TextMeasurer {
     const style = element.ownerDocument.defaultView!.getComputedStyle(element);
     const contour = Number.parseFloat(style.fontSize) >= 48 && style.direction === 'ltr';
     const font = this.fontKey(style);
-    let signature = 2166136261;
-    const source = node.data + font;
-    for (let i = 0; i < source.length; i++) signature = Math.imul(signature ^ source.charCodeAt(i), 16777619);
+    const source = node.data;
     const old = this.states.get(node);
-    if (old?.signature === signature) return old.parts;
+    if (old?.source === source && old.font === font) return old.parts;
     const parts: TextPart[] = [];
     const segments = (contour ? this.graphemes : this.words).segment(node.data);
     for (const part of segments) {
@@ -62,7 +61,7 @@ export class TextMeasurer {
       parts.push({ start: part.index, end: part.index + part.segment.length, contour });
       if (parts.length >= 1024) break;
     }
-    this.states.set(node, { signature, revision: (old?.revision ?? 0) + 1, parts });
+    this.states.set(node, { source, font, revision: (old?.revision ?? 0) + 1, parts });
     return parts;
   }
 

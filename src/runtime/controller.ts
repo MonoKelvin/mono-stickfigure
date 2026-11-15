@@ -9,6 +9,8 @@ import { SurfaceStore } from '../scene/store';
 import type { Anchor, Body, Point, SurfaceSnapshot, Viewport } from '../scene/types';
 import type { ActionId, ActionOptions, ActionResult, Appearance, Diagnostics, LifecycleStatus, MoveOptions, MoveTarget, PauseReason, Physics, Recognition, PlaceResult, PlaceTarget, StartResult, StickFigure, StickFigureEvents, StickFigureOptions, StickFigureSnapshot } from '../types';
 import { FixedStepClock } from './scheduler';
+import { chooseAutonomousPose, recentPenalty } from './autonomy';
+import type { AutonomousPose } from './autonomy';
 
 const ACTIONS: readonly ActionId[] = ['idle', 'walk', 'run', 'sprint', 'turn', 'wave', 'crouch', 'rest', 'prone', 'stand-up', 'jump', 'run-jump', 'running-long-jump', 'fall', 'land-soft', 'roll'];
 type JumpTarget = NavigationTarget & { sourceRevision: number };
@@ -61,6 +63,10 @@ export class StickFigureController implements StickFigure {
   private readonly visits = new Map<string, number>();
   private localGoals = 0;
   private explorationTarget: Point | null = null;
+  private readonly recentAutonomousPoses: AutonomousPose[] = [];
+  private readonly recentSurfaces: string[] = [];
+  private stagnantDecisions = 0;
+  private decisionDistance = 0;
   private gaitDistance = 0;
   private readonly budget: number;
   private readonly limit: number;
@@ -637,9 +643,13 @@ export class StickFigureController implements StickFigure {
     }
     if (this.pauses.has('boundary-wait')) { this.sleep(); return; }
     const scanStart = performance.now();
-    this.store.scan(viewport, this.budget);
+    // Foreground support verification above is mandatory. Background discovery
+    // and neighborhood refresh share the remaining perception budget instead of
+    // adding up to 32 unbudgeted DOM measurements after a full scan slice.
+    const remaining = Math.max(0, this.budget - (scanStart - started));
+    if (remaining > 0) this.store.scan(viewport, this.body ? remaining / 2 : remaining);
+    if (this.body) this.store.refreshNearby(this.body.position, this.appearance.height * 8, viewport, Math.max(0, remaining - (performance.now() - scanStart)));
     this.metrics.scanMs = performance.now() - scanStart;
-    if (this.body) this.store.refreshNearby(this.body.position, this.appearance.height * 8, viewport);
     if (!this.body) {
       const candidates = this.store.snapshots().flatMap((surface) => {
         const u = this.standingU(surface);
@@ -901,9 +911,16 @@ export class StickFigureController implements StickFigure {
       if (this.goal) this.beginRouteStep();
     } else if (this.action === 'idle' && this.autonomous && !this.reduced && !this.pendingAction && !this.pendingMove && this.simulationTime >= this.decisionAt) {
       this.decisionAt = this.simulationTime + 0.8;
+      if (this.gaitDistance - this.decisionDistance >= this.appearance.height) this.stagnantDecisions = 0;
+      else this.stagnantDecisions++;
+      this.decisionDistance = this.gaitDistance;
       const choice = this.decisions++ > 0 ? this.random() : 1;
-      const pose = choice < 0.06 ? 'wave' : choice < 0.09 ? 'rest' : choice < 0.11 ? 'crouch' : choice < 0.12 && this.fitsProne(surface, this.support!.u, this.facing) ? 'prone' : null;
-      if (pose) { this.poseDuration = POSE_DURATION[pose]; this.setAction(pose); }
+      const pose = chooseAutonomousPose(choice, this.recentAutonomousPoses, this.stagnantDecisions, this.fitsProne(surface, this.support!.u, this.facing));
+      if (pose) {
+        this.recentAutonomousPoses.push(pose);
+        if (this.recentAutonomousPoses.length > 8) this.recentAutonomousPoses.shift();
+        this.poseDuration = POSE_DURATION[pose]; this.setAction(pose);
+      }
       else if (!this.chooseRandomGoal(viewport)) {
         const interval = surface.available.find((range) => this.support!.u >= range.start && this.support!.u <= range.end)!;
         const direction: 1 | -1 = this.support!.u - interval.start > interval.end - this.support!.u ? -1 : 1;
@@ -992,7 +1009,8 @@ export class StickFigureController implements StickFigure {
       const point = this.pointOn(surface, candidate.target.u);
       const distance = Math.hypot(point.x - origin.x, point.y - origin.y);
       const visits = this.visits.get(surface.id) ?? 0;
-      const weight = Math.min(6, Math.max(1, distance / (h * 3))) / ((1 + visits * 1.8) * (1 + candidate.cost * 0.04));
+      const recentSurfacePenalty = recentPenalty(this.recentSurfaces, surface.id);
+      const weight = Math.min(6, Math.max(1, distance / (h * 3))) / ((1 + visits * 1.8) * recentSurfacePenalty * (1 + candidate.cost * 0.04));
       return [{ ...candidate, surface, weight }];
     });
     if (routes.length) {
@@ -1138,6 +1156,10 @@ export class StickFigureController implements StickFigure {
 
   private anchorTo(surface: SurfaceSnapshot, u: number): void {
     this.previousPhysics = null;
+    if (this.recentSurfaces.at(-1) !== surface.id) {
+      this.recentSurfaces.push(surface.id);
+      if (this.recentSurfaces.length > 8) this.recentSurfaces.shift();
+    }
     this.visits.set(surface.id, (this.visits.get(surface.id) ?? 0) + 1);
     if (this.visits.size > 64) this.visits.delete(this.visits.keys().next().value!);
     this.support = { surfaceId: surface.id, sourceRevision: surface.sourceRevision, u };

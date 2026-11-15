@@ -1,4 +1,4 @@
-import { firstCollision, firstWall, planJump } from './solver';
+import { firstCollision, firstWall, planJump, SurfaceCollisionIndex } from './solver';
 import type { Anchor, Point, SurfaceSnapshot } from '../scene/types';
 
 export interface NavigationTarget {
@@ -54,12 +54,12 @@ export interface ReachableRoute {
   cost: number;
 }
 
-export function firstLanding(origin: Point, velocity: Point, surfaces: readonly SurfaceSnapshot[], gravity: number, footRadius: number, ignoredId?: string, bodyHeight = 0): { surfaceId: string; u: number; time: number } | null {
-  const collision = firstCollision({ position: origin, velocity }, surfaces, Number.POSITIVE_INFINITY, gravity, footRadius, bodyHeight, Number.POSITIVE_INFINITY, ignoredId);
+export function firstLanding(origin: Point, velocity: Point, surfaces: readonly SurfaceSnapshot[], gravity: number, footRadius: number, ignoredId?: string, bodyHeight = 0, index?: SurfaceCollisionIndex): { surfaceId: string; u: number; time: number } | null {
+  const collision = firstCollision({ position: origin, velocity }, surfaces, Number.POSITIVE_INFINITY, gravity, footRadius, bodyHeight, Number.POSITIVE_INFINITY, ignoredId, index);
   return collision?.kind === 'land' ? { surfaceId: collision.surfaceId, u: collision.u, time: collision.time } : null;
 }
 
-export function planTakeoff(source: SurfaceSnapshot, u: number, target: Point, physics: NavigationPhysics, long: boolean, surfaces: readonly SurfaceSnapshot[], targetId: string): TakeoffPlan | null {
+export function planTakeoff(source: SurfaceSnapshot, u: number, target: Point, physics: NavigationPhysics, long: boolean, surfaces: readonly SurfaceSnapshot[], targetId: string, index?: SurfaceCollisionIndex): TakeoffPlan | null {
   const width = source.b.x - source.a.x;
   const interval = source.available.find((range) => u >= range.start && u <= range.end);
   if (!interval || width <= 0) return null;
@@ -78,8 +78,8 @@ export function planTakeoff(source: SurfaceSnapshot, u: number, target: Point, p
     const distance = speed ** 2 / (2 * acceleration) + speed * (physics.anticipation ?? 0.16);
     const startX = launchX - Math.sign(velocity.x) * distance;
     if (startX < left - 1e-6 || startX > right + 1e-6) continue;
-    if (firstWall({ x: startX, y: source.a.y }, launchX, surfaces, physics.footRadius, physics.bodyHeight ?? 0)) continue;
-    const landing = firstLanding({ x: launchX, y: source.a.y }, velocity, surfaces, physics.gravity, physics.footRadius, undefined, physics.bodyHeight ?? 0);
+    if (firstWall({ x: startX, y: source.a.y }, launchX, surfaces, physics.footRadius, physics.bodyHeight ?? 0, index)) continue;
+    const landing = firstLanding({ x: launchX, y: source.a.y }, velocity, surfaces, physics.gravity, physics.footRadius, undefined, physics.bodyHeight ?? 0, index);
     if (!landing || landing.surfaceId !== targetId) continue;
     const destination = surfaces.find((surface) => surface.id === landing.surfaceId)!;
     const landingX = destination.a.x + (destination.b.x - destination.a.x) * landing.u;
@@ -89,16 +89,16 @@ export function planTakeoff(source: SurfaceSnapshot, u: number, target: Point, p
   return null;
 }
 
-function transition(from: Node, to: Node, surfaces: readonly SurfaceSnapshot[], physics: NavigationPhysics): Edge | null {
+function transition(from: Node, to: Node, surfaces: readonly SurfaceSnapshot[], physics: NavigationPhysics, index: SurfaceCollisionIndex): Edge | null {
   const overlapLeft = Math.max(from.left, to.left), overlapRight = Math.min(from.right, to.right);
   const overlap = overlapLeft <= overlapRight;
   const start = overlap ? (overlapLeft + overlapRight) / 2 : to.left > from.right ? from.right : from.left;
   const inset = Math.min((to.right - to.left) / 2, physics.footRadius);
   const end = overlap ? start : to.left > from.right ? to.left + inset : to.right - inset;
-  if (firstWall(to.center, end, surfaces, physics.footRadius, physics.bodyHeight ?? 0)) return null;
+  if (firstWall(to.center, end, surfaces, physics.footRadius, physics.bodyHeight ?? 0, index)) return null;
   if (overlap && to.center.y > from.center.y + 1) {
-    if (firstWall(from.center, start, surfaces, physics.footRadius, physics.bodyHeight ?? 0)) return null;
-    const landing = firstLanding({ x: start, y: from.center.y }, { x: 0, y: 0 }, surfaces, physics.gravity, physics.footRadius, from.surface.id, physics.bodyHeight ?? 0);
+    if (firstWall(from.center, start, surfaces, physics.footRadius, physics.bodyHeight ?? 0, index)) return null;
+    const landing = firstLanding({ x: start, y: from.center.y }, { x: 0, y: 0 }, surfaces, physics.gravity, physics.footRadius, from.surface.id, physics.bodyHeight ?? 0, index);
     if (landing?.surfaceId === to.surface.id) return {
       departure: (start - from.surface.a.x) / (from.surface.b.x - from.surface.a.x), destination: landing.u, kind: 'drop',
       cost: Math.abs(from.center.x - start) / physics.walkSpeed + landing.time + Math.abs(end - to.center.x) / physics.walkSpeed,
@@ -107,12 +107,12 @@ function transition(from: Node, to: Node, surfaces: readonly SurfaceSnapshot[], 
   const sourceU = (start - from.surface.a.x) / (from.surface.b.x - from.surface.a.x);
   for (const long of [false, true]) {
     if (long && (!physics.longUpwardSpeed || !physics.longHorizontalSpeed)) continue;
-    const takeoff = planTakeoff(from.surface, sourceU, { x: end, y: to.center.y }, physics, long, surfaces, to.surface.id);
+    const takeoff = planTakeoff(from.surface, sourceU, { x: end, y: to.center.y }, physics, long, surfaces, to.surface.id, index);
     if (!takeoff) continue;
     const launchX = from.surface.a.x + (from.surface.b.x - from.surface.a.x) * takeoff.launchU;
     const startX = from.surface.a.x + (from.surface.b.x - from.surface.a.x) * takeoff.startU;
-    if (startX < from.left - 1e-6 || startX > from.right + 1e-6 || firstWall(from.center, startX, surfaces, physics.footRadius, physics.bodyHeight ?? 0)) continue;
-    const landing = firstLanding({ x: launchX, y: from.center.y }, takeoff.velocity, surfaces, physics.gravity, physics.footRadius, undefined, physics.bodyHeight ?? 0);
+    if (startX < from.left - 1e-6 || startX > from.right + 1e-6 || firstWall(from.center, startX, surfaces, physics.footRadius, physics.bodyHeight ?? 0, index)) continue;
+    const landing = firstLanding({ x: launchX, y: from.center.y }, takeoff.velocity, surfaces, physics.gravity, physics.footRadius, undefined, physics.bodyHeight ?? 0, index);
     if (!landing || landing.surfaceId !== to.surface.id) continue;
     const x = to.surface.a.x + (to.surface.b.x - to.surface.a.x) * landing.u;
     if (x < to.left - 1e-6 || x > to.right + 1e-6) continue;
@@ -145,6 +145,8 @@ function contains(node: Node, target: NavigationTarget): boolean {
 }
 
 function search(candidates: readonly Node[], start: Node, surfaces: readonly SurfaceSnapshot[], physics: NavigationPhysics, goal?: Node) {
+  // One immutable geometry batch per search; never reuse this index across scene updates.
+  const index = new SurfaceCollisionIndex(surfaces);
   const open = new Set<Node>([start]);
   const costs = new Map<string, number>([[start.key, 0]]);
   const previous = new Map<string, { node: Node; edge: Edge }>();
@@ -162,7 +164,7 @@ function search(candidates: readonly Node[], start: Node, surfaces: readonly Sur
       const upward = physics.longUpwardSpeed ?? physics.upwardSpeed;
       const discriminant = upward ** 2 + 2 * physics.gravity * (next.center.y - current!.center.y);
       if (discriminant <= 0 || gap > (physics.longHorizontalSpeed ?? physics.maxHorizontalSpeed) * (upward + Math.sqrt(discriminant)) / physics.gravity) continue;
-      const edge = transition(current!, next, surfaces, physics);
+      const edge = transition(current!, next, surfaces, physics, index);
       if (!edge) continue;
       const cost = costs.get(current!.key)! + edge.cost;
       if (cost >= (costs.get(next.key) ?? Infinity)) continue;
@@ -200,6 +202,9 @@ export function findRoute(surfaces: readonly SurfaceSnapshot[], anchor: Anchor, 
     const destination = goal.surface.a.x + (goal.surface.b.x - goal.surface.a.x) * target.u;
     return firstWall(origin, destination, surfaces, physics.footRadius, physics.bodyHeight ?? 0) ? null : assemble(start, goal, target, new Map());
   }
+  // Endpoints are actual standing positions, not the interval centers used for intermediate nodes.
+  start.center.x = start.surface.a.x + (start.surface.b.x - start.surface.a.x) * anchor.u;
+  goal.center.x = goal.surface.a.x + (goal.surface.b.x - goal.surface.a.x) * target.u;
   const dx = goal.center.x - start.center.x, dy = goal.center.y - start.center.y;
   const length = dx ** 2 + dy ** 2;
   const score = (node: Node) => {
@@ -215,6 +220,7 @@ export function reachableRoutes(surfaces: readonly SurfaceSnapshot[], anchor: An
   const nodes = platformNodes(surfaces, physics.footRadius);
   const start = nodes.find((node) => contains(node, anchor));
   if (!start) return [];
+  start.center.x = start.surface.a.x + (start.surface.b.x - start.surface.a.x) * anchor.u;
   const others = nodes.filter((node) => node !== start).sort((a, b) => Math.hypot(a.center.x - start.center.x, a.center.y - start.center.y) - Math.hypot(b.center.x - start.center.x, b.center.y - start.center.y));
   const near = others.slice(0, 31), distant = others.slice(31);
   const spread = distant.length <= 16 ? distant : Array.from({ length: 16 }, (_, i) => distant[Math.floor(i * (distant.length - 1) / 15)]!);
