@@ -92,7 +92,7 @@ try {
       await page.goto('http://127.0.0.1:5173/examples/?mode=manual');
       await page.evaluate(() => window.demoReady);
       await settled();
-      assert.equal(await page.evaluate(() => window.mono.getSnapshot().appearance.height), 18);
+      assert.equal(await page.evaluate(() => window.mono.getSnapshot().appearance.height), 16);
       assert.equal(await page.evaluate(() => window.mono.getSnapshot().autonomous), false);
       const start = await page.evaluate(() => window.mono.start());
       assert.equal(start.supportedActions.length, 16);

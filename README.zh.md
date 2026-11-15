@@ -20,13 +20,13 @@ npm run dev
 
 演示导入 `dist/index.mjs`。修改库源码后需要重新构建，或另开终端运行 `npm run build:watch`。开发服务使用固定端口，5173 被占用时不会自动换端口。
 
-当前是未发布的早期预览版（`private: true`），不是完整首版。下文包名导入用于本地包或 tarball 安装后的消费；仓库演示直接导入构建文件，尚不能从 npm 安装公开版本。
+当前是早期预览版，并非完整首版。可在仓库根目录运行 `npm pack` 生成安装包，再通过 `npm install ./mono-stickfigure-0.0.1.tgz` 安装。公开 npm 安装需要先完成发布。
 
 ## 当前能力
 
 - 识别可见实线上边框、有色差的纯色填充块，包括无边框按钮。
 - 普通文字采用字墨顶部度量近似；大号水平、从左到右的文字采用局部字形顶部轮廓近似。
-- 默认 18 CSS px 的单色侧向人物。
+- 默认 16 CSS px 的单色侧向人物。
 - 行走、跑步、冲刺、转身、招呼、蹲下、叉腰休息、趴下和起身。
 - 重力驱动的跳跃、跑跳、助跑远跳、坠落、落地缓冲；冲击较大且空间足够时衔接翻滚。
 - 元素、已识别平台、页面坐标目标；支持取消请求与有界路线规划。
@@ -43,7 +43,7 @@ import { createStickFigure } from 'mono-stickfigure';
 
 const figure = createStickFigure({
   autonomous: false,
-  appearance: { height: 18, color: '#181818', lineWidth: 1.2 },
+  appearance: { height: 16, color: '#181818', lineWidth: 1.2 },
   recognition: { colorTolerance: 0.01 },
 });
 

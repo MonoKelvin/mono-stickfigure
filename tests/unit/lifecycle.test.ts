@@ -23,7 +23,7 @@ describe('无 DOM 的入口与生命周期', () => {
     const small = createStickFigure({ appearance: { height: 16 } });
     const large = createStickFigure({ appearance: { height: 40 } });
     const defaults = createStickFigure();
-    expect(defaults.getSnapshot().appearance.height).toBe(24);
+    expect(defaults.getSnapshot().appearance.height).toBe(16);
     expect(defaults.getSnapshot().autonomous).toBe(true);
     expect(small.getSnapshot().physics).toEqual(large.getSnapshot().physics);
     expect(defaults.getSnapshot().physics).toEqual({ gravity: 980, jumpHeight: 52 });

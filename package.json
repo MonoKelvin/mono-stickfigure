@@ -1,7 +1,6 @@
 {
   "name": "mono-stickfigure",
   "version": "0.0.1",
-  "private": true,
   "description": "在任何前端页面上活动的火柴人",
   "author": "MonoKelvin",
   "license": "MIT",
@@ -15,6 +14,13 @@
     "dist",
     "README.zh.md"
   ],
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "exports": {
     ".": {
       "import": {
@@ -46,7 +52,9 @@
     "verify:demo": "node scripts/verify-demo.mjs",
     "test:package": "node scripts/check-package.mjs",
     "bench": "node scripts/bench.mjs",
-    "dev": "vite"
+    "dev": "vite",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm run build && npm run typecheck && npm test && npm run test:package"
   },
   "devDependencies": {
     "@playwright/test": "1.65.0",

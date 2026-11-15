@@ -263,9 +263,16 @@ export function samplePose(output: Pose, input: PoseInput): void {
     y = mix(y, -0.065 + side * 0.012, output.roll);
     const groundAngle = mix(walk.angle, run.angle, output.runMix) * output.walking * (1 - output.prone);
     const airAngle = jumping ? mix(leading ? -0.12 : 0.55, -0.10, descending) : 0.12;
-    output.footAngles[side === -1 ? 0 : 1] = mix(mix(groundAngle, airAngle, output.airborne), 0.65, output.roll);
+    const angle = mix(mix(groundAngle, airAngle, output.airborne), 0.65, output.roll);
+    output.footAngles[side === -1 ? 0 : 1] = angle;
     return { side, x: x * h, y: y * h };
   });
+  if (action === 'land-soft') {
+    for (const foot of feet) foot.y = 0;
+  } else if (!airborne && !rolling) {
+    const highestFoot = Math.max(...feet.map((foot) => foot.y));
+    for (const foot of feet) foot.y -= highestFoot;
+  }
   const runPhase = ((phase % 0.5) + 0.5) % 0.5;
   const stance = mix(1.42 * 0.32, 1.8 * 0.28, output.sprint) / runStride;
   const supportProgress = clamp01(runPhase / stance);

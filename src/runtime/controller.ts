@@ -107,7 +107,7 @@ export class StickFigureController implements StickFigure {
 
   constructor(options: StickFigureOptions = {}) {
     this.options = { ...options };
-    this.appearance = { height: 18, color: '#181818', lineWidth: 1.2, head: 'circle', ...options.appearance };
+    this.appearance = { height: 16, color: '#181818', lineWidth: 1.2, head: 'circle', ...options.appearance };
     this.physics = { gravity: 980, jumpHeight: 52, ...options.physics };
     this.recognition = { colorTolerance: 0.01, ...options.recognition };
     positive(this.recognition.colorTolerance, 'recognition.colorTolerance');
@@ -776,7 +776,10 @@ export class StickFigureController implements StickFigure {
     };
     if (this.action === 'brake') {
       advance(0);
-      if (Math.abs(this.body!.velocity.x) < 0.5 && this.actionTime >= TRANSITION_DURATION.brake) this.completeTransition();
+      if (Math.abs(this.body!.velocity.x) < 0.5 && this.actionTime >= TRANSITION_DURATION.brake) {
+        this.body!.velocity.x = 0;
+        this.completeTransition();
+      }
       return;
     }
     if (this.action === 'turn' || this.action === 'stand-up') {

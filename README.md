@@ -20,13 +20,13 @@ Open [the playground](http://127.0.0.1:5173/examples/). Use [manual mode](http:/
 
 The example imports `dist/index.mjs`. After editing library code, rebuild it or run `npm run build:watch` in another terminal. The dev server uses a fixed port and does not switch ports if 5173 is occupied.
 
-This package is an unpublished early preview (`private: true`), not the complete first release. Package-name imports below are for a local package or tarball installation; the repository example uses the built file directly.
+This is an early preview, not the complete first release. Run `npm pack` in the repository root to create a tarball, then install it with `npm install ./mono-stickfigure-0.0.1.tgz`. Installation from the public npm registry requires publishing first.
 
 ## What works today
 
 - Visible solid top borders and distinguishable solid-color fills, including borderless buttons.
 - Ordinary text ink-top estimates and local top-contour approximations for large, horizontal, left-to-right text.
-- A single-color, side-facing figure, 18 CSS px tall by default.
+- A single-color, side-facing figure, 16 CSS px tall by default.
 - Walking, running, sprinting, turning, greeting, crouching, resting, lying down, and standing up.
 - Gravity-driven jumps, run-jumps, running long jumps, falls, landing recovery, and rolling after sufficiently hard landings when there is room.
 - Element, surface, or page-coordinate movement targets; cancellable requests and bounded route planning.
@@ -43,7 +43,7 @@ import { createStickFigure } from 'mono-stickfigure';
 
 const figure = createStickFigure({
   autonomous: false,
-  appearance: { height: 18, color: '#181818', lineWidth: 1.2 },
+  appearance: { height: 16, color: '#181818', lineWidth: 1.2 },
   recognition: { colorTolerance: 0.01 },
 });
 

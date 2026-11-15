@@ -61,7 +61,7 @@
             <details class="settings-panel">
               <summary><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16M8 4v6M16 14v6" /></svg>参数</summary>
               <div class="settings">
-                <label for="size">人物大小 <output id="size-value" for="size">18 px</output><input id="size" type="range" min="12" max="40" step="2" value="18" /></label>
+                <label for="size">人物大小 <output id="size-value" for="size">16 px</output><input id="size" type="range" min="12" max="40" step="2" value="16" /></label>
                 <label for="gravity">重力 <output id="gravity-value" for="gravity">980 px/s²</output><input id="gravity" type="range" min="490" max="1470" step="490" value="980" /></label>
                 <label for="color-tolerance">色差阈值 <output id="tolerance-value" for="color-tolerance">0.01</output><input id="color-tolerance" type="range" min="0.01" max="0.20" step="0.01" value="0.01" /></label>
                 <p class="caption">阈值越低，越接近背景的色块也会成为平台。参数改变后重新创建人物。</p>
@@ -146,7 +146,7 @@
             <div class="side-heading"><span>由页面决定地形</span><span aria-hidden="true">↙</span></div>
             <pre id="code-platform" class="code-block"><code>const actor = createStickFigure({
   root: document,
-  appearance: { height: 18 },
+  appearance: { height: 16 },
   autonomous: true,
   physics: { gravity: 980, jumpHeight: 52 },
   recognition: { colorTolerance: 0.01 }

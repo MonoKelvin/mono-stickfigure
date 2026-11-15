@@ -161,7 +161,7 @@ describe('形状与动作过渡', () => {
     samplePose(pose, { ...base, action: 'walk', dt: 1 / 60, horizontalSpeed: 30, distance: 1 });
     expect(pose.transition).toBeGreaterThan(0);
     expect(pose.transition).toBeLessThan(1);
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 9; i++) {
       samplePose(pose, { ...base, action: 'walk', dt: 1 / 60, horizontalSpeed: 30, distance: 1 + i });
       for (const [knee, foot] of [[JOINT.leftKnee, JOINT.leftFoot], [JOINT.rightKnee, JOINT.rightFoot]] as const) {
         expect(distance(at(pose, JOINT.pelvis), at(pose, knee))).toBeCloseTo(24 * 0.255, 6);

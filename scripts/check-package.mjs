@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,8 +8,9 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const npm = process.env.npm_execpath;
 if (!npm) throw new Error('请通过 npm run test:package 执行');
 const runNpm = (args, cwd) => execFileSync(process.execPath, [npm, ...args], { cwd, encoding: 'utf8' });
+await mkdir(join(root, '.artifacts'), { recursive: true });
 const directory = await mkdtemp(join(root, '.artifacts', 'consumer-'));
-const packed = Object.values(JSON.parse(runNpm(['pack', '--json', '--pack-destination', directory], root)))[0];
+const packed = Object.values(JSON.parse(runNpm(['pack', '--ignore-scripts', '--json', '--pack-destination', directory], root)))[0];
 const tarball = join(directory, packed.filename);
 const files = packed.files.map((file) => file.path);
 if (files.some((file) => /^(src|tests|examples|node_modules|\.artifacts)\//.test(file))) throw new Error('发布白名单包含开发文件');
