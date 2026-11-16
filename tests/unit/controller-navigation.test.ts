@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { captureClimbAttachment } from '../../src/animation/climb';
+import { SIT_STAND_DURATION } from '../../src/animation/rig';
+import type { Pose } from '../../src/animation/rig';
+import type { ActionId } from '../../src/types';
 import type { ClimbAttachmentState } from '../../src/animation/climb';
 import { createPlanningJob } from '../../src/motion/navigation';
 import type { NavigationStep, PlanningJob } from '../../src/motion/navigation';
@@ -21,6 +24,12 @@ interface Internals {
   climb: ClimbContact;
   climbAttachment: ClimbAttachmentState | null;
   stepClimbing(dt: number): void;
+  action: ActionId;
+  actionTime: number;
+  standDuration: number;
+  pose: Pose;
+  standThen(next: () => void): void;
+  completeTransition(): void;
   descentDistance: number;
   handleBoundary(viewport: Viewport): void;
   collisionSurfaces(surfaces: SurfaceSnapshot[], viewport: Viewport): SurfaceSnapshot[];
@@ -184,6 +193,25 @@ describe('规划结果与当前几何的整合', () => {
     expect(() => internals.stepClimbing(1 / 120)).not.toThrow();
     expect(internals.body.position).toEqual({ x: 15.84, y: 600 });
     expect(internals.body.velocity).toEqual({ x: 0, y: 0 });
+    actor.destroy();
+  });
+
+  it('坐姿起身使用真实时长，重复请求只换完成回调而不重播收脚', () => {
+    const actor = new StickFigureController({ autonomous: false });
+    const internals = actor as unknown as Internals;
+    internals.action = 'sit';
+    internals.pose.sit = 1;
+    let first = 0, replacement = 0;
+    internals.standThen(() => first++);
+    expect(internals.action).toBe('stand-up');
+    expect(internals.standDuration).toBe(SIT_STAND_DURATION);
+    internals.actionTime = 0.4;
+    internals.standThen(() => replacement++);
+    expect(internals.actionTime).toBe(0.4);
+    expect(internals.standDuration).toBe(SIT_STAND_DURATION);
+    internals.completeTransition();
+    expect(first).toBe(0);
+    expect(replacement).toBe(1);
     actor.destroy();
   });
 

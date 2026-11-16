@@ -1,4 +1,5 @@
 import type { Point } from '../scene/types';
+import { CLIMB_HANG_CHEST_CLEARANCE, CLIMB_HANG_CHAIN_LENGTH, CLIMB_HANG_FOOT_ANGLE, CLIMB_HANG_FOOT_SPREAD, FOOT_TOE_LENGTH } from './geometry';
 
 export const CLIMB_ATTACH_DURATION = 0.9;
 
@@ -17,9 +18,8 @@ export interface ClimbAttachmentState extends ClimbAttachmentSample {
   angularVelocity: number;
 }
 
-const CHAIN_LENGTH = 0.73;
-const CHEST_CLEARANCE = 0.16;
-const TOE_REACH = 0.075;
+const CHAIN_LENGTH = CLIMB_HANG_CHAIN_LENGTH;
+const CHEST_CLEARANCE = CLIMB_HANG_CHEST_CLEARANCE;
 const MIN_GATHER_TIME = 0.12;
 const LATEST_GATHER_TIME = 0.38;
 const MAX_ANGLE = 0.62;
@@ -40,7 +40,10 @@ function wallGeometry(normal: Point): { x: number; y: number; lowerAngle: number
   const x = normal.x / length, y = normal.y / length;
   if (Math.abs(x) < Math.cos(10 * Math.PI / 180)) return null;
   const slope = Math.atan2(y, Math.abs(x));
-  return { x, y, lowerAngle: Math.asin((TOE_REACH - CHEST_CLEARANCE) / CHAIN_LENGTH) - slope };
+  const toeReach = FOOT_TOE_LENGTH * Math.cos(slope + CLIMB_HANG_FOOT_ANGLE);
+  const radius = Math.hypot(CHAIN_LENGTH, CLIMB_HANG_FOOT_SPREAD);
+  const lowerAngle = Math.asin((toeReach - CHEST_CLEARANCE + 0.003) / radius) + Math.atan2(CLIMB_HANG_FOOT_SPREAD, CHAIN_LENGTH) - slope;
+  return { x, y, lowerAngle };
 }
 
 export function captureClimbAttachment(generation: number, velocity: Point, normal: Point, height: number, gravity: number): ClimbAttachmentState {
@@ -90,7 +93,7 @@ export function stepClimbAttachment(state: Readonly<ClimbAttachmentState>, dt: n
     angularVelocity = clamp(angularVelocity, -MAX_ANGULAR_VELOCITY, MAX_ANGULAR_VELOCITY);
     if (before < 0 && angularVelocity >= 0) closest = true;
   }
-  const toeDistance = CHEST_CLEARANCE + CHAIN_LENGTH * (Math.abs(wall.x) * Math.sin(angle) + wall.y * Math.cos(angle)) - TOE_REACH;
+  const toeDistance = CHEST_CLEARANCE + CHAIN_LENGTH * (Math.abs(wall.x) * Math.sin(angle) + wall.y * Math.cos(angle)) - CLIMB_HANG_FOOT_SPREAD * Math.cos(angle + Math.atan2(wall.y, Math.abs(wall.x))) - FOOT_TOE_LENGTH * Math.cos(Math.atan2(wall.y, Math.abs(wall.x)) + CLIMB_HANG_FOOT_ANGLE);
   const gathering = state.gather > 0 || time >= LATEST_GATHER_TIME || time >= MIN_GATHER_TIME && (closest || toeDistance <= 0.025);
   const remaining = CLIMB_ATTACH_DURATION - state.time;
   const gather = gathering ? clamp(state.gather + (1 - state.gather) * duration / Math.max(duration, remaining), 0, 1) : 0;

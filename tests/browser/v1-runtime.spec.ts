@@ -1,4 +1,35 @@
 import { expect, test } from '@playwright/test';
+import type { Page } from '@playwright/test';
+
+async function captureDrawing(page: Page, duration: number) {
+  return page.evaluate(async (duration) => {
+    const canvas = document.querySelector<HTMLCanvasElement>('canvas[data-mono-stickfigure]')!;
+    const context = canvas.getContext('2d')!;
+    const moveTo = context.moveTo, lineTo = context.lineTo, originalStroke = context.stroke;
+    const stroke = originalStroke.bind(context);
+    let start = { x: 0, y: 0 };
+    let segments: { from: { x: number; y: number }; to: { x: number; y: number } }[] = [];
+    let drawn = segments;
+    context.moveTo = function (x, y) { start = { x, y }; moveTo.call(this, x, y); };
+    context.lineTo = function (x, y) { segments.push({ from: start, to: { x, y } }); lineTo.call(this, x, y); };
+    context.stroke = function () { drawn = segments; segments = []; stroke(); };
+    const samples = [];
+    const began = performance.now();
+    try {
+      while (performance.now() - began < duration * 1000) {
+        await new Promise(requestAnimationFrame);
+        if (drawn.length !== 13) continue;
+        const snapshot = window.mono.getSnapshot();
+        const box = canvas.getBoundingClientRect();
+        const root = { x: box.left + box.width / 2, y: box.top + box.height * 0.65 };
+        samples.push({ time: (performance.now() - began) / 1000, root, segments: drawn, position: snapshot.position!, climb: snapshot.climb, surface: snapshot.surfaces.find(surface => surface.id === snapshot.climb?.surfaceId), pauses: snapshot.pauses });
+      }
+    } finally {
+      context.moveTo = moveTo; context.lineTo = lineTo; context.stroke = originalStroke;
+    }
+    return samples;
+  }, duration);
+}
 
 test.beforeEach(async ({ page }) => {
   await page.goto('/examples/?mode=manual');
@@ -114,6 +145,79 @@ test('双手先抓稳再贴脚，慢速攀爬保持真实接触', async ({ page 
   expect((await page.evaluate(() => window.mono.getSnapshot())).climb).not.toBeNull();
   await test.info().attach('climb-captures', { body: JSON.stringify(captures), contentType: 'application/json' });
 });
+
+for (const height of [16, 24]) for (const button of ['demo-climb', 'demo-slope']) {
+  test(`${height}px ${button}真实绘制端点不穿墙且贴脚后才沿边运动`, async ({ page }) => {
+    test.setTimeout(30000);
+    await page.locator('#size').evaluate((input: HTMLInputElement, height) => {
+      input.value = String(height); input.dispatchEvent(new Event('change', { bubbles: true }));
+    }, height);
+    await page.evaluate(() => window.demoReady);
+    await page.locator(`#${button}`).click();
+    await page.waitForFunction(() => window.mono.getSnapshot().climb !== null);
+    const initial = await page.evaluate(() => window.mono.getSnapshot().position!);
+    const samples = await captureDrawing(page, 3);
+    expect(samples.length).toBeGreaterThan(30);
+    const lengths = [0.12, 0.065, 0.22, 0.19, 0.18, 0.19, 0.18, 0.255, 0.255, 0.255, 0.255];
+    for (const sample of samples) {
+      expect(sample.pauses).toEqual([]);
+      const normal = sample.climb!.normal, wall = sample.surface!.a;
+      const gap = (p: { x: number; y: number }) => (sample.root.x + p.x - wall.x) * normal.x + (sample.root.y + p.y - wall.y) * normal.y;
+      for (const [index, bone] of sample.segments.slice(0, 11).entries()) expect(Math.hypot(bone.to.x - bone.from.x, bone.to.y - bone.from.y)).toBeCloseTo(height * lengths[index]!, 5);
+      const contacts = [sample.segments[4]!.to, sample.segments[6]!.to, sample.segments[11]!.to, sample.segments[12]!.to];
+      for (const foot of sample.segments.slice(11)) {
+        expect(gap(foot.to)).toBeGreaterThanOrEqual(-height * 1e-5);
+        expect(gap(foot.from)).toBeGreaterThan(height * 0.02);
+      }
+      if (sample.time < 0.65) {
+        expect(Math.hypot(sample.position.x - initial.x, sample.position.y - initial.y)).toBeLessThan(0.01);
+        for (const hand of contacts.slice(0, 2)) expect(gap(hand)).toBeCloseTo(0, 4);
+      }
+      if (Math.hypot(sample.position.x - initial.x, sample.position.y - initial.y) > 0.01) expect(contacts.filter(p => Math.abs(gap(p)) < height * 0.001).length).toBeGreaterThanOrEqual(3);
+    }
+    expect(Math.hypot(samples.at(-1)!.position.x - initial.x, samples.at(-1)!.position.y - initial.y)).toBeGreaterThan(height * 0.1);
+    await page.locator('#cancel-action').click();
+    await page.locator('#climb-terrain').scrollIntoViewIfNeeded();
+    await page.waitForFunction(() => window.mono.getSnapshot().status === 'running');
+    await expect(page.locator('#message')).toContainText('已取消');
+    expect(await page.evaluate(() => window.mono.getSnapshot().climb)).not.toBeNull();
+    await test.info().attach('rendered-contact-samples', { body: JSON.stringify(samples), contentType: 'application/json' });
+  });
+}
+
+for (const height of [16, 24]) {
+  test(`${height}px坐起真实绘制膝盖不穿地，原地跑暂停后连续恢复`, async ({ page }) => {
+    await page.locator('#size').evaluate((input: HTMLInputElement, height) => {
+      input.value = String(height); input.dispatchEvent(new Event('change', { bubbles: true }));
+    }, height);
+    await page.evaluate(() => window.demoReady);
+    await page.locator('[data-place="action-runway"]').first().click();
+    await page.locator('#sit').click();
+    await page.waitForFunction(() => window.mono.getSnapshot().action === 'sit');
+    await captureDrawing(page, 1.1);
+    await page.locator('#stand-up').click();
+    await page.waitForFunction(() => window.mono.getSnapshot().action === 'stand-up');
+    const standing = await captureDrawing(page, 1.1);
+    expect(standing.length).toBeGreaterThan(15);
+    for (const sample of standing) {
+      for (const knee of [sample.segments[7]!.to, sample.segments[9]!.to]) expect(knee.y).toBeLessThanOrEqual(height * 1e-6);
+      expect(Math.max(sample.segments[11]!.from.y, sample.segments[12]!.from.y)).toBeCloseTo(0, 5);
+    }
+    await page.locator('#run-in-place').click();
+    await page.waitForFunction(() => window.mono.getSnapshot().action === 'run-in-place');
+    const before = await page.evaluate(() => window.mono.getSnapshot().position!);
+    await captureDrawing(page, 0.4);
+    await page.locator('#pause').click();
+    const paused = await page.evaluate(() => window.mono.getSnapshot());
+    await page.evaluate(async () => { for (let i = 0; i < 15; i++) await new Promise(requestAnimationFrame); });
+    expect(await page.evaluate(() => window.mono.getSnapshot().position)).toEqual(paused.position);
+    await page.locator('#pause').click();
+    const running = await captureDrawing(page, 0.8);
+    expect(running.every(s => Math.hypot(s.position.x - before.x, s.position.y - before.y) < 0.01)).toBe(true);
+    await page.waitForFunction(() => (document.getElementById('cancel-action') as HTMLButtonElement).disabled);
+    await expect(page.locator('#message')).toContainText('已完成');
+  });
+}
 
 test('最高重力的限速高落地同一步翻滚，不先行走或缓冲', async ({ page }) => {
   await page.evaluate(() => {

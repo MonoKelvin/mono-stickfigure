@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { solveTwoBone } from '../../src/animation/ik';
-import { BONES, createPose, FOOT_HEEL_LENGTH, FOOT_TOE_LENGTH, IN_PLACE_CADENCE, JOINT, ROLL_DURATION, samplePose, SIT_STAND_DURATION } from '../../src/animation/rig';
+import { BONES, createPose, IN_PLACE_CADENCE, JOINT, ROLL_DURATION, samplePose, SIT_STAND_DURATION } from '../../src/animation/rig';
+import { FOOT_HEEL_LENGTH, FOOT_TOE_LENGTH } from '../../src/animation/geometry';
+import { captureClimbAttachment, stepClimbAttachment } from '../../src/animation/climb';
 import type { ClimbAttachmentSample } from '../../src/animation/climb';
 import type { ActionId } from '../../src/types';
 
@@ -372,6 +374,185 @@ describe('人体翻滚与新增姿态', () => {
       });
       expect(samples[0]!.x).toBeCloseTo(samples[1]!.x, 5);
       expect(samples[0]!.y).toBeCloseTo(samples[1]!.y, 5);
+    }
+  });
+
+  it('抓附完整时序的膝分支连续，不在贴脚时突然反折', () => {
+    for (const slope of [-0.17, 0, 0.17]) for (const velocity of [{ x: 60, y: 200 }, { x: 0, y: 0 }]) {
+      const normal = { x: -Math.cos(slope), y: Math.sin(slope) };
+      const pose = createPose();
+      let state = captureClimbAttachment(1, velocity, normal, h, 980);
+      let previous: { x: number; y: number }[] | null = null;
+      for (let frame = 0; frame <= 108; frame++) {
+        samplePose(pose, { height: h, action: 'climb', time: frame / 120, dt: 1 / 120, facing: 1, verticalVelocity: 0, landProgress: 0, climb: { normal, distance: 0, attachment: state, speed: 0 } });
+        const knees = [point(pose, JOINT.leftKnee), point(pose, JOINT.rightKnee)];
+        if (previous) for (const index of [0, 1]) expect(distance(knees[index]!, previous[index]!), `${slope} ${frame}`).toBeLessThan(h * 0.10);
+        previous = knees;
+        state = stepClimbAttachment(state, 1 / 120, normal, h, 980);
+      }
+    }
+  });
+
+  it('两坡向和镜像抓附的实际脚尖脚跟不穿墙，ready 时确实可达', () => {
+    for (const facing of [1, -1] as const) for (const slope of [-0.17, 0, 0.17]) for (const gravity of [400, 2000]) {
+      const normal = { x: -facing * Math.cos(slope), y: Math.sin(slope) };
+      for (const velocity of [{ x: 60 * facing, y: -200 }, { x: -2048 * facing, y: 600 }, { x: 0, y: 0 }]) {
+        const pose = createPose();
+        samplePose(pose, { height: h, action: 'idle', time: 0, dt: 1, facing, verticalVelocity: 0, landProgress: 0 });
+        let state = captureClimbAttachment(1, velocity, normal, h, gravity);
+        for (let frame = 0; frame <= 108; frame++) {
+          samplePose(pose, { height: h, action: 'climb', time: frame / 120, dt: 1 / 120, facing, verticalVelocity: 0, landProgress: 0, climb: { normal, distance: 0, attachment: state, speed: 0 } });
+          for (const index of [0, 1]) {
+            const { toe, heel } = footPoints(pose, index);
+            const gap = (p: typeof toe) => p.x * normal.x + p.y * normal.y + h * 0.26;
+            expect(gap(toe), `${facing} ${slope} ${gravity} ${frame} toe${index}`).toBeGreaterThanOrEqual(-h * 1e-6);
+            expect(gap(heel), `${facing} ${slope} ${gravity} ${frame} heel${index}`).toBeGreaterThanOrEqual(-h * 1e-6);
+            if (state.ready) expect(gap(toe)).toBeCloseTo(0, 5);
+          }
+          state = stepClimbAttachment(state, 1 / 120, normal, h, gravity);
+        }
+        expect(state.ready).toBe(true);
+      }
+    }
+  });
+
+  it('双腕从斜墙抓附首帧到就绪始终到达目标而非仅保持骨长', () => {
+    for (const facing of [1, -1] as const) for (const slope of [-0.17, 0, 0.17]) {
+      const normal = { x: -facing * Math.cos(slope), y: Math.sin(slope) };
+      const pose = createPose();
+      samplePose(pose, { height: h, action: 'jump', time: 0.15, dt: 1, facing, verticalVelocity: -100, landProgress: 0, reach: { normal, distance: h * 0.26, progress: 1 } });
+      let state = captureClimbAttachment(1, { x: 60 * facing, y: 200 }, normal, h, 980);
+      for (let frame = 0; frame <= 108; frame++) {
+        samplePose(pose, { height: h, action: 'climb', time: frame / 120, dt: 1 / 120, facing, verticalVelocity: 0, landProgress: 0, climb: { normal, distance: 0, attachment: state, speed: 0 } });
+        for (const [index, hand] of [JOINT.leftHand, JOINT.rightHand].entries()) {
+          const offset = index === 0 ? 0.70 : 0.50;
+          const target = { x: (-normal.x * 0.26 - normal.y * offset * facing) * h, y: (-normal.y * 0.26 + normal.x * offset * facing) * h };
+          expect(distance(point(pose, hand), target), `${facing} ${slope} ${frame}`).toBeLessThan(h * 1e-6);
+        }
+        state = stepClimbAttachment(state, 1 / 120, normal, h, 980);
+      }
+    }
+  });
+
+  it('坐起收脚时膝盖不穿平台，脚跟和双掌支撑不被骨长检查漏掉', () => {
+    for (const facing of [1, -1] as const) {
+      const pose = sample('sit', 1, facing);
+      for (let frame = 0; frame <= 126; frame++) {
+        const time = frame / 120;
+        samplePose(pose, { height: h, action: 'stand-up', time, dt: 1 / 120, facing, verticalVelocity: 0, landProgress: 0, actionDuration: SIT_STAND_DURATION });
+        for (const [knee, foot] of [[JOINT.leftKnee, JOINT.leftFoot], [JOINT.rightKnee, JOINT.rightFoot]] as const) {
+          expect(point(pose, knee).y, `${facing} ${frame}`).toBeLessThanOrEqual(h * 1e-6);
+          expect(distance(point(pose, JOINT.pelvis), point(pose, knee))).toBeCloseTo(h * 0.255, 7);
+          expect(distance(point(pose, knee), point(pose, foot))).toBeCloseTo(h * 0.255, 7);
+        }
+        const heels = [0, 1].map(index => footPoints(pose, index).heel.y);
+        expect(Math.max(...heels)).toBeCloseTo(0, 6);
+        if (time < SIT_STAND_DURATION * 0.52) for (const hand of [JOINT.leftHand, JOINT.rightHand]) expect(point(pose, hand).y).toBeCloseTo(0, 6);
+      }
+    }
+  });
+
+  it('斜墙完整攀爬周期有三点支撑，实际脚尖世界抓点连续且停止后贴稳', () => {
+    for (const facing of [1, -1] as const) for (const slope of [-0.17, 0, 0.17]) {
+      const normal = { x: -facing * Math.cos(slope), y: Math.sin(slope) };
+      const tangent = { x: -normal.y * facing, y: normal.x * facing };
+      const pose = createPose();
+      samplePose(pose, { height: h, action: 'idle', time: 0, dt: 1, facing, verticalVelocity: 0, landProgress: 0 });
+      let previous: { x: number; y: number }[] | null = null;
+      let previousPlanted: boolean[] = [];
+      for (let frame = 0; frame <= 1000; frame++) {
+        const d = frame * h * 0.4 / 1000;
+        samplePose(pose, { height: h, action: 'climb', time: 1, dt: frame === 0 ? 1 : 1 / 120, facing, verticalVelocity: 0, landProgress: 0, climb: { normal, distance: d, attachment: attachment(), speed: h * 0.4 } });
+        const root = { x: normal.x * h * 0.26 + tangent.x * d, y: normal.y * h * 0.26 + tangent.y * d };
+        const contacts = [point(pose, JOINT.leftHand), point(pose, JOINT.rightHand), footPoints(pose, 0).toe, footPoints(pose, 1).toe].map(p => ({ x: root.x + p.x, y: root.y + p.y }));
+        const phases = [0, 0.5, 0.25, 0.75].map(offset => (frame / 1000 + offset) % 1);
+        const planted = phases.map(q => q < 0.75);
+        expect(planted.filter(Boolean)).toHaveLength(3);
+        for (const [index, p] of contacts.entries()) {
+          const gap = p.x * normal.x + p.y * normal.y;
+          expect(gap).toBeGreaterThanOrEqual(-h * 1e-6);
+          if (planted[index]) {
+            expect(gap).toBeCloseTo(0, 5);
+            if (previous && previousPlanted[index]) expect(distance(p, previous[index]!)).toBeLessThan(h * 1e-6);
+          }
+        }
+        for (const index of [0, 1]) {
+          const heel = footPoints(pose, index).heel;
+          expect((root.x + heel.x) * normal.x + (root.y + heel.y) * normal.y).toBeGreaterThan(h * 0.1);
+        }
+        previous = contacts; previousPlanted = planted;
+      }
+      for (let frame = 0; frame < 120; frame++) samplePose(pose, { height: h, action: 'climb', time: 2, dt: 1 / 120, facing, verticalVelocity: 0, landProgress: 0, climb: { normal, distance: h * 0.4, attachment: attachment(), speed: 0 } });
+      for (const index of [0, 1]) {
+        const toe = footPoints(pose, index).toe;
+        expect(toe.x * normal.x + toe.y * normal.y + h * 0.26).toBeCloseTo(0, 4);
+      }
+    }
+  });
+
+  it('原地高抬腿与对侧肘摆一致，落脚相位和暂停恢复连续', () => {
+    for (const facing of [1, -1] as const) {
+      const pose = createPose();
+      samplePose(pose, { height: h, action: 'idle', time: 0, dt: 1, facing, verticalVelocity: 0, landProgress: 0 });
+      let previous = [...pose.footAngles];
+      let left = false, right = false;
+      for (let frame = 0; frame < 360; frame++) {
+        const input = { height: h, action: 'run-in-place' as const, time: frame / 120, dt: 1 / 120, facing, verticalVelocity: 0, landProgress: 0, distance: 0, horizontalSpeed: 0 };
+        samplePose(pose, input);
+        if (frame > 60) {
+          for (const index of [0, 1]) expect(Math.abs(pose.footAngles[index]! - previous[index]!)).toBeLessThan(0.02);
+          if (point(pose, JOINT.leftFoot).y < -h * 0.2) {
+            expect(point(pose, JOINT.rightElbow).x * facing).toBeGreaterThan(point(pose, JOINT.leftElbow).x * facing + h * 0.1);
+            expect(point(pose, JOINT.leftKnee).y).toBeLessThan(point(pose, JOINT.rightKnee).y);
+            left = true;
+          }
+          if (point(pose, JOINT.rightFoot).y < -h * 0.2) {
+            expect(point(pose, JOINT.leftElbow).x * facing).toBeGreaterThan(point(pose, JOINT.rightElbow).x * facing + h * 0.1);
+            expect(point(pose, JOINT.rightKnee).y).toBeLessThan(point(pose, JOINT.leftKnee).y);
+            right = true;
+          }
+        }
+        previous = [...pose.footAngles];
+        if (frame === 180) {
+          const joints = [...pose.joints], phase = pose.inPlacePhase;
+          samplePose(pose, { ...input, dt: 0 });
+          expect([...pose.joints]).toEqual(joints);
+          expect(pose.inPlacePhase).toBe(phase);
+        }
+      }
+      expect(left && right).toBe(true);
+      expect(pose.distance).toBe(0);
+      expect(pose.phase).toBe(0);
+    }
+  });
+
+  it('后撑先于臀落，坐稳呼吸不移动臀掌脚跟，短时坐姿从当前脚位起身', () => {
+    for (const facing of [1, -1] as const) for (const seatedUntil of [0.1, 0.4, 1.8]) {
+      const pose = createPose();
+      samplePose(pose, { height: h, action: 'idle', time: 0, dt: 1, facing, verticalVelocity: 0, landProgress: 0 });
+      let handsAt = Infinity, hipAt = Infinity;
+      for (let frame = 0; frame <= seatedUntil * 120; frame++) {
+        samplePose(pose, { height: h, action: 'sit', time: frame / 120, dt: 1 / 120, clock: frame / 120, facing, verticalVelocity: 0, landProgress: 0 });
+        if (Math.abs(point(pose, JOINT.leftHand).y) < h * 1e-4 && Math.abs(point(pose, JOINT.rightHand).y) < h * 1e-4) handsAt = Math.min(handsAt, frame);
+        if (Math.abs(point(pose, JOINT.pelvis).y) < h * 1e-4) hipAt = Math.min(hipAt, frame);
+        for (const index of [0, 1]) expect(footPoints(pose, index).heel.y).toBeCloseTo(0, 6);
+        if (frame > 150) {
+          expect(point(pose, JOINT.pelvis).y).toBeCloseTo(0, 6);
+          for (const hand of [JOINT.leftHand, JOINT.rightHand]) expect(point(pose, hand).y).toBeCloseTo(0, 6);
+        }
+      }
+      if (seatedUntil > 1) {
+        expect(handsAt).toBeLessThan(hipAt);
+        expect(Math.abs(point(pose, JOINT.leftFoot).x - point(pose, JOINT.rightFoot).x)).toBeGreaterThan(h * 0.1);
+      }
+      const initial = [point(pose, JOINT.leftFoot), point(pose, JOINT.rightFoot)];
+      samplePose(pose, { height: h, action: 'stand-up', time: 0, dt: 0, facing, verticalVelocity: 0, landProgress: 0, actionDuration: SIT_STAND_DURATION });
+      for (const [index, foot] of [JOINT.leftFoot, JOINT.rightFoot].entries()) expect(distance(point(pose, foot), initial[index]!)).toBeLessThan(h * 1e-6);
+      for (let frame = 1; frame <= 126; frame++) {
+        samplePose(pose, { height: h, action: 'stand-up', time: frame / 120, dt: 1 / 120, facing, verticalVelocity: 0, landProgress: 0, actionDuration: SIT_STAND_DURATION });
+        for (const knee of [JOINT.leftKnee, JOINT.rightKnee]) expect(point(pose, knee).y).toBeLessThanOrEqual(h * 1e-6);
+        expect(Math.max(...[0, 1].map(index => footPoints(pose, index).heel.y))).toBeCloseTo(0, 6);
+      }
     }
   });
 

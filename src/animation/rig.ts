@@ -1,6 +1,7 @@
 import type { ActionId } from '../types';
 import type { Point } from '../scene/types';
 import type { ClimbAttachmentSample } from './climb';
+import { CLIMB_HANG_CHEST_CLEARANCE, CLIMB_HANG_CHAIN_LENGTH, CLIMB_HANG_FOOT_ANGLE, CLIMB_HANG_FOOT_SPREAD, FOOT_HEEL_LENGTH, FOOT_TOE_LENGTH } from './geometry';
 import { solveTwoBone } from './ik';
 
 export const JOINT = {
@@ -17,8 +18,6 @@ export const BONES: readonly (readonly [number, number])[] = [
 export const TURN_DURATION = 0.26;
 export const LAND_DURATION = 0.24;
 export const ROLL_DURATION = 0.92;
-export const FOOT_HEEL_LENGTH = 0.035;
-export const FOOT_TOE_LENGTH = 0.075;
 export const SIT_DOWN_DURATION = 0.85;
 export const SIT_STAND_DURATION = 1.05;
 export const IN_PLACE_CADENCE = 1.2;
@@ -344,7 +343,7 @@ export function samplePose(output: Pose, input: PoseInput): void {
   const sitLower = smoothstep(clamp01(output.sit / 0.65));
   const sitLegs = smoothstep(clamp01((output.sit - 0.45) / 0.55));
   const sitArms = smoothstep(clamp01((output.sit - 0.25) / 0.30));
-  const hangingChest = climbPoint(normal, 0.60, 0.16);
+  const hangingChest = climbPoint(normal, 0.60, CLIMB_HANG_CHEST_CLEARANCE);
   const steadyChest = climbPoint(normal, 0.60 + Math.sin(climbPhase * Math.PI * 4) * 0.010 * output.climbMoving, CLIMB_CHEST_GAP);
   const climbingLean = Math.atan2(-normal.y, -normal.x) + 0.26;
   const attachmentLean = mixAngle(output.climbAngle, climbingLean, output.climbGather);
@@ -374,9 +373,9 @@ export function samplePose(output: Pose, input: PoseInput): void {
     const brace = side === -1 ? output.climbLeftFoot : output.climbRightFoot;
     const climbingAngle = Math.atan2(-normal.y, -normal.x) - 0.12;
     if (output.climbing > 1e-5) {
-      const pivot = climbPoint(normal, 0.60, 0.16);
-      const chain = 0.22 + 0.47;
-      const hanging = { x: pivot.x - Math.sin(output.climbAngle) * chain + side * Math.cos(output.climbAngle) * 0.012, y: pivot.y + Math.cos(output.climbAngle) * chain + side * Math.sin(output.climbAngle) * 0.012 };
+      const pivot = climbPoint(normal, 0.60, CLIMB_HANG_CHEST_CLEARANCE);
+      const chain = CLIMB_HANG_CHAIN_LENGTH;
+      const hanging = { x: pivot.x - Math.sin(output.climbAngle) * chain + side * Math.cos(output.climbAngle) * CLIMB_HANG_FOOT_SPREAD, y: pivot.y + Math.cos(output.climbAngle) * chain + side * Math.sin(output.climbAngle) * CLIMB_HANG_FOOT_SPREAD };
       const grip = climbGrip(normal, climbPhase + (side === -1 ? 0.25 : 0.75), false, output.climbMoving);
       const ankle = { x: grip.x - Math.cos(climbingAngle) * FOOT_TOE_LENGTH, y: grip.y - Math.sin(climbingAngle) * FOOT_TOE_LENGTH };
       const target = { x: mix(hanging.x, ankle.x, brace), y: mix(hanging.y, ankle.y, brace) };
@@ -386,10 +385,10 @@ export function samplePose(output: Pose, input: PoseInput): void {
     const groundAngle = mix(walk.angle, run.angle, output.runMix) * output.walking * (1 - output.prone);
     const airAngle = jumping ? mix(leading ? -0.12 : 0.55, -0.10, descending) : 0.12;
     let angle = mix(groundAngle, airAngle, output.airborne);
-    angle = mix(angle, lift ? -0.15 : 0, output.inPlace);
+    angle = mix(angle, -0.15 * lift, output.inPlace);
     angle = mix(angle, -0.12, sitLegs);
     angle = mix(angle, rollProgress < 0.34 || rollProgress > 0.76 ? 0 : -0.35, output.roll);
-    angle = mix(angle, 0.12, output.climbing * (1 - brace));
+    angle = mix(angle, CLIMB_HANG_FOOT_ANGLE, output.climbing * (1 - brace));
     angle = mix(angle, climbingAngle, output.climbing * brace);
     if (action === 'stand-up' && output.standSit > 0.01) {
       const begin = side === -1 ? 0.02 : 0.27;
@@ -426,6 +425,7 @@ export function samplePose(output: Pose, input: PoseInput): void {
   hip.y = mix(hip.y, (-0.47 - Math.sin(phase * Math.PI * 4) * 0.008) * h, output.inPlace);
   hip.x = mix(hip.x, -0.035 * h, sitLower);
   hip.y = mix(hip.y, 0, sitLower);
+  if (action === 'stand-up') hip.y -= h * 0.085 * output.standSit * sitLower * smoothstep(clamp01((standProgress - 0.02) / 0.25));
   hip.x = mix(hip.x, roll.hip.x * h, output.roll);
   hip.y = mix(hip.y, roll.hip.y * h, output.roll);
   if (output.climbing > 1e-5) {
@@ -443,6 +443,22 @@ export function samplePose(output: Pose, input: PoseInput): void {
   lean = mixAngle(lean, roll.lean, output.roll);
   lean = mixAngle(lean, attachmentLean, output.climbing);
   const chest = { x: hip.x + Math.sin(lean) * h * 0.22, y: hip.y - Math.cos(lean) * h * 0.22 };
+  if (climbing) {
+    const origin = { x: climbingChest.x * h, y: climbingChest.y * h };
+    const dx = chest.x - origin.x, dy = chest.y - origin.y;
+    const a = dx * dx + dy * dy;
+    let amount = 1;
+    if (a > 1e-12) for (const phase of [climbPhase, climbPhase + 0.5]) {
+      const target = climbGrip(normal, phase, true, output.climbMoving);
+      const x = origin.x - target.x * h, y = origin.y - target.y * h;
+      const b = 2 * (x * dx + y * dy);
+      const c = x * x + y * y - (h * 0.3699) ** 2;
+      amount = Math.min(amount, (-b + Math.sqrt(Math.max(0, b * b - 4 * a * c))) / (2 * a));
+    }
+    // 沿可达胸点到融合胸点的线段收回，双腕约束同时成立且躯干不缩短。
+    hip.x += (amount - 1) * dx; hip.y += (amount - 1) * dy;
+    chest.x = origin.x + amount * dx; chest.y = origin.y + amount * dy;
+  }
   const turnFront = 1 - Math.abs(output.facingScale);
   const put = (id: number, x: number, y: number, frontX = 0) => {
     output.joints[id * 2] = x * output.facingScale + frontX * turnFront;
@@ -458,12 +474,7 @@ export function samplePose(output: Pose, input: PoseInput): void {
   const head = { x: neck.x + Math.sin(headLean) * h * 0.12, y: neck.y - Math.cos(headLean) * h * 0.12 };
   put(JOINT.head, head.x, head.y);
 
-  const legs = feet.map(foot => {
-    const first = solveTwoBone(hip, { x: foot.x, y: foot.y }, h * 0.255, h * 0.255, -1);
-    if (output.climbing < 1e-5 || first.joint.x * normal.x + first.joint.y * normal.y + h * 0.26 >= h * 0.015) return { ...foot, leg: first };
-    const alternate = solveTwoBone(hip, { x: foot.x, y: foot.y }, h * 0.255, h * 0.255, 1);
-    return { ...foot, leg: alternate.joint.x * normal.x + alternate.joint.y * normal.y > first.joint.x * normal.x + first.joint.y * normal.y ? alternate : first };
-  });
+  const legs = feet.map(foot => ({ ...foot, leg: solveTwoBone(hip, { x: foot.x, y: foot.y }, h * 0.255, h * 0.255, output.climbing > 1e-5 ? 1 : -1) }));
   for (let i = 0; i < legs.length; i++) {
     const { side, leg } = legs[i]!;
     const other = legs[1 - i]!.leg;

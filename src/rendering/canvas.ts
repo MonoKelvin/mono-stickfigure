@@ -1,4 +1,5 @@
-import { BONES, JOINT, FOOT_HEEL_LENGTH, FOOT_TOE_LENGTH } from '../animation/rig';
+import { BONES, JOINT } from '../animation/rig';
+import { FOOT_HEEL_LENGTH, FOOT_TOE_LENGTH } from '../animation/geometry';
 import type { Pose } from '../animation/rig';
 import type { Point } from '../scene/types';
 import type { Appearance } from '../types';
