@@ -66,7 +66,7 @@ interface PaintStyle {
   scale: Point | null;
 }
 
-function paintAt(doc: Document, point: Point, styles: Map<Element, PaintStyle>, subject?: Element, kind?: SurfaceSnapshot['kind']): readonly [Color, Color] | null {
+function paintAt(doc: Document, point: Point, styles: Map<Element, PaintStyle>, subject?: Element, kind?: SurfaceSnapshot['kind'], borderEdge: 'Top' | 'Bottom' = 'Top'): readonly [Color, Color] | null {
   const hits = doc.elementsFromPoint(point.x, point.y).filter((node) => !node.hasAttribute('data-mono-stickfigure'));
   if (!hits.length || hits.length > 32) return null;
   const nodes = new Map<Element, { order: number; children: Element[] }>();
@@ -107,7 +107,7 @@ function paintAt(doc: Document, point: Point, styles: Map<Element, PaintStyle>, 
       ? color(doc, style.backgroundColor) : [0, 0, 0, 0] as Color;
     let painted = background, backdrop = background;
     if (node === subject) {
-      const foreground = color(doc, kind === 'fill' ? style.backgroundColor : kind === 'border' ? style.borderTopColor : style.webkitTextFillColor || style.color);
+      const foreground = color(doc, kind === 'fill' ? style.backgroundColor : kind === 'border' ? style.getPropertyValue(`border-${borderEdge.toLowerCase()}-color`) : style.webkitTextFillColor || style.color);
       painted = kind === 'fill' ? foreground : composite(foreground, background);
       if (kind !== 'text') backdrop = [0, 0, 0, 0];
     }
@@ -159,7 +159,7 @@ export function visibleStyle(element: Element): { style: CSSStyleDeclaration; op
   return { style, opacity };
 }
 
-function topRadii(style: CSSStyleDeclaration, width: number, height: number, sx: number, sy: number): { left: number; right: number } {
+function topRadii(style: CSSStyleDeclaration, width: number, height: number, sx: number, sy: number, edge: 'Top' | 'Bottom' = 'Top'): { left: number; right: number } {
   const read = (value: string) => {
     const parts = value.split(/\s+/);
     const x = parts[0] ?? '0', y = parts[1] ?? x;
@@ -168,7 +168,7 @@ function topRadii(style: CSSStyleDeclaration, width: number, height: number, sx:
   const tl = read(style.borderTopLeftRadius), tr = read(style.borderTopRightRadius);
   const bl = read(style.borderBottomLeftRadius), br = read(style.borderBottomRightRadius);
   const factor = Math.min(1, width / (tl.x + tr.x || width), width / (bl.x + br.x || width), height / (tl.y + bl.y || height), height / (tr.y + br.y || height));
-  return { left: tl.x * factor, right: tr.x * factor };
+  return edge === 'Top' ? { left: tl.x * factor, right: tr.x * factor } : { left: bl.x * factor, right: br.x * factor };
 }
 
 export function projectSurface(element: Element, a: Point, b: Point, left: number, right: number, viewport: Viewport, kind: SurfaceSnapshot['kind'], evidence: SurfaceSnapshot['evidence'], clipSelf = false, bounds?: SurfaceBounds): SurfaceMeasurement {
@@ -227,7 +227,7 @@ export function projectSurface(element: Element, a: Point, b: Point, left: numbe
   return measured(available.length ? 'valid' : 'invalid', available);
 }
 
-function coloredSurface(element: Element, measured: SurfaceMeasurement, tolerance: number, insideY: number, outsideY?: number): SurfaceMeasurement {
+function coloredSurface(element: Element, measured: SurfaceMeasurement, tolerance: number, insideY: number, outsideY?: number, borderEdge: 'Top' | 'Bottom' = 'Top'): SurfaceMeasurement {
   if (measured.status !== 'valid') return measured;
   const doc = element.ownerDocument;
   const styles = new Map<Element, PaintStyle>();
@@ -239,7 +239,7 @@ function coloredSurface(element: Element, measured: SurfaceMeasurement, toleranc
     const samples = Math.min(8, Math.max(3, Math.ceil((right - left) / 64)));
     for (let i = 0; i < samples; i++) {
       const x = left + (right - left) * (i + 0.5) / samples;
-      const inside = paintAt(doc, { x, y: insideY }, styles, element, measured.kind);
+      const inside = paintAt(doc, { x, y: insideY }, styles, element, measured.kind, borderEdge);
       const outside = outsideY === undefined ? inside : paintAt(doc, { x, y: outsideY }, styles);
       if (!inside || !outside) { unknown = true; continue; }
       if (measured.kind === 'fill' && difference(inside[0], inside[1]) < tolerance) continue;
@@ -262,15 +262,27 @@ export function measureBorder(element: Element, viewport: Viewport, tolerance = 
   const visible = visibleStyle(element);
   if (!visible) return null;
   const { style, opacity } = visible;
-  const width = Number.parseFloat(style.borderTopWidth);
-  if (style.borderTopStyle !== 'solid' || !(width > 0) || !color(element.ownerDocument, style.borderTopColor)[3] || !(opacity > 0)) return null;
+  if (!(opacity > 0)) return null;
+  const candidates = (['Top', 'Bottom'] as const).flatMap(edge => {
+    const prefix = `border-${edge.toLowerCase()}`;
+    const width = Number.parseFloat(style.getPropertyValue(`${prefix}-width`));
+    return style.getPropertyValue(`${prefix}-style`) === 'solid' && width > 0 && color(element.ownerDocument, style.getPropertyValue(`${prefix}-color`))[3] ? [{ edge, width }] : [];
+  });
+  if (!candidates.length) return null;
   const rect = element.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0 || element.getClientRects().length !== 1) return null;
   const scale = axisScale(element);
-  const radii = topRadii(style, rect.width, rect.height, scale?.x ?? 1, scale?.y ?? 1);
-  const a = { x: rect.left, y: rect.top + width * (scale?.y ?? 1) / 2 };
-  const b = { x: rect.right, y: a.y };
-  return coloredSurface(element, projectSurface(element, a, b, rect.left + radii.left, rect.right - radii.right, viewport, 'border', 'dom-painted-edge'), tolerance, a.y, rect.top - 0.5);
+  let fallback: SurfaceMeasurement | null = null;
+  for (const { edge, width } of candidates) {
+    const radii = topRadii(style, rect.width, rect.height, scale?.x ?? 1, scale?.y ?? 1, edge);
+    const y = edge === 'Top' ? rect.top + width * (scale?.y ?? 1) / 2 : rect.bottom - width * (scale?.y ?? 1) / 2;
+    const a = { x: rect.left, y }, b = { x: rect.right, y };
+    const outside = edge === 'Top' ? rect.top - 0.5 : rect.bottom + 0.5;
+    const measured = coloredSurface(element, projectSurface(element, a, b, rect.left + radii.left, rect.right - radii.right, viewport, 'border', 'dom-painted-edge'), tolerance, y, outside, edge);
+    if (measured.status === 'valid') return measured;
+    fallback ??= measured;
+  }
+  return fallback;
 }
 
 export function measureFill(element: Element, viewport: Viewport, tolerance: number): SurfaceMeasurement | null {

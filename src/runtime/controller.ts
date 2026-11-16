@@ -647,8 +647,11 @@ export class StickFigureController implements StickFigure {
     // and neighborhood refresh share the remaining perception budget instead of
     // adding up to 32 unbudgeted DOM measurements after a full scan slice.
     const remaining = Math.max(0, this.budget - (scanStart - started));
-    if (remaining > 0) this.store.scan(viewport, this.body ? remaining / 2 : remaining);
-    if (this.body) this.store.refreshNearby(this.body.position, this.appearance.height * 8, viewport, Math.max(0, remaining - (performance.now() - scanStart)));
+    const left = () => Math.max(0, remaining - (performance.now() - scanStart));
+    if (this.body) this.store.discoverNearby(this.body.position, this.appearance.height * 8, viewport, remaining / 3);
+    const scanBudget = left();
+    if (scanBudget > 0) this.store.scan(viewport, this.body ? scanBudget / 2 : scanBudget);
+    if (this.body) this.store.refreshNearby(this.body.position, this.appearance.height * 8, viewport, left());
     this.metrics.scanMs = performance.now() - scanStart;
     if (!this.body) {
       const candidates = this.store.snapshots().flatMap((surface) => {

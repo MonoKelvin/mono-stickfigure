@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目状态与设计基线
 
-Mono-StickFigure 是框架无关的原生 TypeScript 网页火柴人工具包，核心没有运行时第三方依赖，不截图、不联网。当前是未发布的早期预览版，`package.json` 保持 `private: true`。
+Mono-StickFigure 是框架无关的原生 TypeScript 网页火柴人工具包，核心没有运行时第三方依赖，不截图、不联网。当前版本为 `0.1.0` 的早期预览版。用户已明确授权发布到公开 npm；`package.json` 不设置 `private: true`，通过 `publishConfig` 指定 public 访问和官方 npm registry。远端实际发布状态应以 npm registry 查询结果为准，不能仅凭本地版本号判断已发布。
 
 目前实现真实 DOM 的水平实线上边框、可区分纯色填充和文字顶部识别，支持平台锚点、滚动与平移跟随、目标驱动的自主走跑及有界导航。默认人物高度 16 CSS px、单色侧向骨架；支持 16 个可请求动作，包括跑跳、助跑远跳和翻滚，高冲击落地在空间足够时衔接翻滚。`anticipate / brake` 是内部过渡状态，不在可请求动作列表中。
 

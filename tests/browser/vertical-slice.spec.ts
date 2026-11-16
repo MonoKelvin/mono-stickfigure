@@ -266,6 +266,40 @@ test('手机宽度下移动面板不产生水平溢出，大小与重力控件�
   expect((await snapshot(page)).physics).toEqual({ gravity: 490, jumpHeight: 52 });
 });
 
+test('只带底边的普通元素提供真实水平支撑', async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const div = document.createElement('div');
+    div.style.cssText = 'position:fixed;z-index:100;left:80px;top:80px;width:220px;height:40px;border:0;border-bottom:2px solid rgb(20,90,180);background:transparent';
+    document.body.append(div);
+    const expected = div.getBoundingClientRect().bottom - 1;
+    const placed = await window.mono.place(div);
+    const state = window.mono.getSnapshot();
+    div.remove();
+    return { placed, expected, state };
+  });
+  expect(result.placed.status).toBe('placed');
+  expect(result.state.position!.y).toBeCloseTo(result.expected, 3);
+  expect(result.state.surfaces.find(s => s.id === result.state.support?.surfaceId)?.kind).toBe('border');
+});
+
+test('底边仍遵守遮挡与可见色差限制', async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const div = document.createElement('div');
+    div.style.cssText = 'position:fixed;z-index:100;left:80px;top:80px;width:220px;height:40px;border:0;border-bottom:2px solid transparent;background:transparent';
+    document.body.append(div);
+    const transparent = await window.mono.place(div);
+    div.style.borderBottomColor = 'rgb(20,90,180)';
+    const cover = document.createElement('div');
+    cover.style.cssText = 'position:fixed;z-index:200;left:70px;top:70px;width:240px;height:80px;background:white';
+    document.body.append(cover);
+    const covered = await window.mono.place(div);
+    div.remove(); cover.remove();
+    return { transparent, covered };
+  });
+  expect(result.transparent.status).toBe('rejected');
+  expect(result.covered.status).toBe('rejected');
+});
+
 test('宿主表单正常提交，reduced-motion 下不进行自由行走', async ({ page }) => {
   await page.locator('#field-platform').fill('小白');
   await page.locator('#submit-platform').click();

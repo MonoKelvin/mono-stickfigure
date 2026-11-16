@@ -19,6 +19,17 @@ interface RefreshMeasurement {
   measuredAt: number;
 }
 
+interface NearbyDiscovery {
+  point: Point;
+  radius: number;
+  samples: Point[];
+  sample: number;
+  queue: { node: Node; part?: TextPart }[];
+  cursor: number;
+  processedSinceSample: number;
+  seen: Set<Node>;
+}
+
 // Perception is sampled independently from 120 Hz physics / display-rate rendering.
 // Geometry and explicit scene invalidation still bypass this short reuse window.
 const REFRESH_REUSE_MS = 50;
@@ -40,6 +51,8 @@ export class SurfaceStore {
   private readonly refreshMeasurements = new Map<string, RefreshMeasurement>();
   private nearbyKeys: string[] | null = null;
   private nearbyCursor = 0;
+  private discovery: NearbyDiscovery | null = null;
+  private nextDiscoveryAt = 0;
   private readonly elementMeasurements = new Map<Element, string | null>();
   private readonly textMeasurements = new Map<Text, Map<string, string[]>>();
   readonly pinned = new Set<string>();
@@ -52,7 +65,11 @@ export class SurfaceStore {
 
   beginFrame(viewport: Viewport): void {
     const old = this.frameViewport;
-    if (!old || old.left !== viewport.left || old.top !== viewport.top || old.right !== viewport.right || old.bottom !== viewport.bottom) this.refreshMeasurements.clear();
+    if (!old || old.left !== viewport.left || old.top !== viewport.top || old.right !== viewport.right || old.bottom !== viewport.bottom) {
+      this.refreshMeasurements.clear();
+      this.discovery = null;
+      this.nextDiscoveryAt = 0;
+    }
     this.frameViewport = viewport;
     this.frameTime = performance.now();
     this.elementMeasurements.clear();
@@ -62,6 +79,8 @@ export class SurfaceStore {
 
   invalidate(): void {
     this.rescan = true;
+    this.discovery = null;
+    this.nextDiscoveryAt = 0;
     this.refreshMeasurements.clear();
     this.elementMeasurements.clear();
     this.textMeasurements.clear();
@@ -224,8 +243,20 @@ export class SurfaceStore {
       ...(measured.bounds ? { bounds: measured.bounds } : {}),
     };
     if (!previous && this.records.size >= this.limit) {
-      const victim = [...this.records.keys()].find((key) => !this.pinned.has(key));
-      if (!victim) return null;
+      let victim: string | undefined;
+      let distance = -1;
+      const focus = this.discovery;
+      const proximity = (s: SurfaceSnapshot): number => s.status === 'invalid' || s.status === 'unknown' ? Infinity : Math.hypot(Math.max(s.a.x - focus!.point.x, 0, focus!.point.x - s.b.x), s.a.y - focus!.point.y);
+      let inspected = 0;
+      for (const [key, record] of this.records) {
+        if (this.pinned.has(key)) continue;
+        const d = focus ? proximity(record.snapshot) : 0;
+        if (victim === undefined || d > distance) { victim = key; distance = d; }
+        // Bounded arithmetic only: do not add a full scene search or DOM reads
+        // to every insertion when a large document has reached its capacity.
+        if (!focus || ++inspected >= 64 || d === Infinity) break;
+      }
+      if (!victim || (focus && distance <= focus.radius && proximity(snapshot) > focus.radius)) return null;
       this.records.delete(victim);
       this.refreshMeasurements.delete(victim);
       this.nearbyKeys = null;
@@ -265,6 +296,73 @@ export class SurfaceStore {
       return this.records.get(id)?.snapshot ?? null;
     }
     return this.measure(record.element, viewport);
+  }
+
+  /** Discover unseen DOM candidates near the character, independently of the global walker. */
+  discoverNearby(point: Point, radius: number, viewport: Viewport, budgetMs: number): void {
+    if (!(budgetMs > 0) || !(radius > 0)) return;
+    const started = performance.now();
+    const old = this.discovery;
+    const moved = !old || old.radius !== radius || Math.hypot(point.x - old.point.x, point.y - old.point.y) > radius / 4;
+    if (!moved && old!.sample >= old!.samples.length && old!.cursor >= old!.queue.length && started < this.nextDiscoveryAt) return;
+    if (moved || (old!.sample >= old!.samples.length && old!.cursor >= old!.queue.length && started >= this.nextDiscoveryAt)) {
+      const samples: Point[] = [];
+      for (let y = -2; y <= 2; y++) for (let x = -2; x <= 2; x++) samples.push({ x: point.x + x * radius / 2, y: point.y + y * radius / 2 });
+      samples.sort((a, b) => Math.hypot(a.x - point.x, a.y - point.y) - Math.hypot(b.x - point.x, b.y - point.y) || b.y - a.y);
+      this.discovery = { point: { ...point }, radius, samples, sample: 0, queue: [], cursor: 0, processedSinceSample: 4, seen: new Set() };
+    }
+    const state = this.discovery!;
+    const doc = this.root.nodeType === 9 ? this.root as Document : this.root.ownerDocument!;
+    const admitted = (node: Node): boolean => {
+      if (!node.isConnected || !(this.root.nodeType === 9 || this.root.contains(node))) return false;
+      const element = node.nodeType === 1 ? node as Element : node.parentElement;
+      return !!element && !element.closest('head, script, style, noscript, template, [data-mono-stickfigure]');
+    };
+    const enqueue = (node: Node, offset?: number): void => {
+      if (state.queue.length - state.cursor >= 128 || state.seen.size >= 256 || state.seen.has(node) || !admitted(node)) return;
+      state.seen.add(node);
+      if (node.nodeType === 3) {
+        const parts = this.text.parts(node as Text);
+        const at = offset === undefined ? 0 : Math.max(0, parts.findIndex(p => p.end >= offset));
+        // Caret hit-testing prioritizes the visible words of long paragraphs,
+        // not hundreds of preceding words outside the character's neighborhood.
+        const selected = parts.slice(Math.max(0, at - 4), Math.min(parts.length, at + 12));
+        for (const part of selected) if (state.queue.length - state.cursor < 128) state.queue.push({ node, part });
+      } else if (node.nodeType === 1) state.queue.push({ node });
+    };
+    while (performance.now() - started < budgetMs) {
+      if (state.cursor > 128) { state.queue = state.queue.slice(state.cursor); state.cursor = 0; }
+      const task = state.cursor < state.queue.length && (state.processedSinceSample < 4 || state.sample >= state.samples.length) ? state.queue[state.cursor++] : undefined;
+      if (task) {
+        state.processedSinceSample++;
+        if (!admitted(task.node)) continue;
+        if (task.part) { this.measureTextPart(task.node as Text, task.part, viewport); continue; }
+        const element = task.node as Element;
+        const box = element.getBoundingClientRect();
+        if (box.width > 0 && box.height > 0 && (box.right < state.point.x - radius || box.left > state.point.x + radius || box.bottom < state.point.y - radius || box.top > state.point.y + radius)) continue;
+        this.measure(element, viewport);
+        // Descend only nearby elements; each individual child is processed in
+        // a later budgeted turn. Never enumerate an unbounded subtree at once.
+        let child = element.firstChild;
+        for (let i = 0; child && i < 32; i++, child = child.nextSibling) enqueue(child);
+        continue;
+      }
+      state.processedSinceSample = 0;
+      const sample = state.samples[state.sample++];
+      if (!sample) { state.sample = state.samples.length; this.nextDiscoveryAt = performance.now() + 120; break; }
+      if (sample.x < viewport.left || sample.x >= viewport.right || sample.y < viewport.top || sample.y >= viewport.bottom) continue;
+      const caretDoc = doc as Document & { caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null };
+      const caret = caretDoc.caretPositionFromPoint?.(sample.x, sample.y);
+      const range = !caret ? doc.caretRangeFromPoint?.(sample.x, sample.y) : null;
+      if (caret?.offsetNode.nodeType === 3) enqueue(caret.offsetNode, caret.offset);
+      else if (range?.startContainer.nodeType === 3) enqueue(range.startContainer, range.startOffset);
+      const hitRoot = this.root.nodeType === 11 ? this.root as ShadowRoot : doc;
+      const hits = typeof hitRoot.elementsFromPoint === 'function' ? hitRoot.elementsFromPoint(sample.x, sample.y) : doc.elementsFromPoint(sample.x, sample.y);
+      for (const hit of hits.slice(0, 8)) {
+        if (hit.tagName === 'HTML' || hit.tagName === 'BODY') continue;
+        enqueue(hit);
+      }
+    }
   }
 
   refreshNearby(point: Point, radius: number, viewport: Viewport, budgetMs = Infinity): void {
@@ -316,6 +414,8 @@ export class SurfaceStore {
     this.refreshMeasurements.clear();
     this.nearbyKeys = null;
     this.nearbyCursor = 0;
+    this.discovery = null;
+    this.nextDiscoveryAt = 0;
     this.walker = null;
     this.first = null;
     this.pendingText = null;
