@@ -286,6 +286,7 @@ export interface FlightStepResult extends StepResult {
   climb: ClimbContact | null;
   remainingTime: number;
   contacts: readonly FlightCollision[];
+  grabVelocity: Point | null;
 }
 
 export function stepFlight(body: Body, surfaces: readonly SurfaceSnapshot[], dt: number, gravity: number, terminalSpeed = Infinity, footRadius = 0, bodyHeight = 0, climbTargetId?: string): FlightStepResult {
@@ -296,20 +297,20 @@ export function stepFlight(body: Body, surfaces: readonly SurfaceSnapshot[], dt:
     const collision = firstCollision(current, surfaces, remaining, gravity, footRadius, bodyHeight, terminalSpeed, undefined, undefined, climbTargetId);
     const time = collision?.time ?? remaining;
     current = { position: { x: current.position.x + current.velocity.x * time, y: current.position.y + displacement(current.velocity.y, gravity, time, terminalSpeed) }, velocity: { x: current.velocity.x, y: Math.min(current.velocity.y + gravity * time, terminalSpeed) } };
-    if (!collision) return { body: current, landing: null, climb: null, remainingTime: 0, contacts };
+    if (!collision) return { body: current, landing: null, climb: null, remainingTime: 0, contacts, grabVelocity: null };
     contacts.push(collision);
     remaining -= time;
-    if (collision.kind === 'land') return { body: { position: current.position, velocity: { x: current.velocity.x, y: 0 } }, landing: { surfaceId: collision.surfaceId, u: collision.u, impactSpeed: current.velocity.y }, climb: null, remainingTime: remaining, contacts };
+    if (collision.kind === 'land') return { body: { position: current.position, velocity: { x: current.velocity.x, y: 0 } }, landing: { surfaceId: collision.surfaceId, u: collision.u, impactSpeed: current.velocity.y }, climb: null, remainingTime: remaining, contacts, grabVelocity: null };
     if (collision.kind === 'grab') {
       const surface = surfaces.find(s => s.id === collision.surfaceId)!;
-      return { body: { position: current.position, velocity: { x: 0, y: 0 } }, landing: null, climb: { surfaceId: surface.id, sourceRevision: surface.sourceRevision, u: collision.u, normal: collision.normal }, remainingTime: remaining, contacts };
+      return { body: { position: current.position, velocity: { x: 0, y: 0 } }, landing: null, climb: { surfaceId: surface.id, sourceRevision: surface.sourceRevision, u: collision.u, normal: collision.normal }, remainingTime: remaining, contacts, grabVelocity: { ...current.velocity } };
     }
     current.position.x += collision.normal.x * 1e-6;
     current.position.y += collision.normal.y * 1e-6;
     if (collision.kind === 'wall') current.velocity.x = 0;
     else current.velocity.y = 0;
   }
-  return { body: current, landing: null, climb: null, remainingTime: 0, contacts };
+  return { body: current, landing: null, climb: null, remainingTime: 0, contacts, grabVelocity: null };
 }
 
 export function stepBody(body: Body, surfaces: readonly SurfaceSnapshot[], dt: number, gravity: number, terminalSpeed = Infinity, footRadius = 0, bodyHeight = 0): StepResult {

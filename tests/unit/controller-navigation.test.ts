@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { captureClimbAttachment } from '../../src/animation/climb';
+import type { ClimbAttachmentState } from '../../src/animation/climb';
 import { createPlanningJob } from '../../src/motion/navigation';
 import type { NavigationStep, PlanningJob } from '../../src/motion/navigation';
 import { StickFigureController } from '../../src/runtime/controller';
@@ -17,6 +19,7 @@ interface Internals {
   chooseRandomGoal(viewport: Viewport): boolean;
   random(): number;
   climb: ClimbContact;
+  climbAttachment: ClimbAttachmentState | null;
   stepClimbing(dt: number): void;
   descentDistance: number;
   handleBoundary(viewport: Viewport): void;
@@ -91,6 +94,7 @@ describe('规划结果与当前几何的整合', () => {
     const internals = actor as unknown as Internals;
     internals.body = { position: { x: 15.84, y: 600 }, velocity: { x: 0, y: 0 } };
     internals.climb = { surfaceId: wall.id, sourceRevision: 1, u: 0.6, normal: { x: -1, y: 0 } };
+    internals.climbAttachment = captureClimbAttachment(1, { x: 0, y: 0 }, wall.normal!, 16, 980);
     internals.goal = { surfaceId: wall.id, sourceRevision: 1, u: 0.18, automatic: false };
     internals.route = [{ kind: 'climb', surfaceId: wall.id, sourceRevision: 1, u: 0.18 }];
     internals.store = { get: () => wall, snapshots: () => [wall], clear: () => {} };
@@ -151,12 +155,31 @@ describe('规划结果与当前几何的整合', () => {
     actor.destroy();
   });
 
+  it('抓附中取消目标后局部摆动继续收敛，世界根仍留在墙上', () => {
+    const wall: SurfaceSnapshot = { ...platform, mode: 'climb', normal: { x: -1, y: 0 }, a: { x: 20, y: 0 }, b: { x: 20, y: 1000 } };
+    const actor = new StickFigureController({ autonomous: false });
+    const internals = actor as unknown as Internals;
+    internals.body = { position: { x: 15.84, y: 600 }, velocity: { x: 0, y: 0 } };
+    internals.climb = { surfaceId: wall.id, sourceRevision: 1, u: 0.6, normal: { x: -1, y: 0 } };
+    internals.climbAttachment = captureClimbAttachment(1, { x: 60, y: 100 }, wall.normal!, 16, 980);
+    const initial = internals.climbAttachment.angle;
+    internals.route = [];
+    internals.store = { get: () => wall, snapshots: () => [wall], clear: () => {} };
+    for (let frame = 0; frame < 120; frame++) internals.stepClimbing(1 / 120);
+    expect(internals.climbAttachment!.ready).toBe(true);
+    expect(internals.climbAttachment!.angle).not.toBe(initial);
+    expect(internals.body.position).toEqual({ x: 15.84, y: 600 });
+    expect(internals.body.velocity).toEqual({ x: 0, y: 0 });
+    actor.destroy();
+  });
+
   it('攀爬面未知时停止推进，不进入只接受有效区间的求解器', () => {
     const wall: SurfaceSnapshot = { ...platform, mode: 'climb', status: 'unknown', normal: { x: -1, y: 0 }, a: { x: 20, y: 0 }, b: { x: 20, y: 1000 }, available: [] };
     const actor = new StickFigureController({ autonomous: false });
     const internals = actor as unknown as Internals;
     internals.body = { position: { x: 15.84, y: 600 }, velocity: { x: 0, y: -6.4 } };
     internals.climb = { surfaceId: wall.id, sourceRevision: 1, u: 0.6, normal: { x: -1, y: 0 } };
+    internals.climbAttachment = captureClimbAttachment(1, { x: 0, y: 0 }, wall.normal!, 16, 980);
     internals.store = { get: () => wall, snapshots: () => [wall], clear: () => {} };
     expect(() => internals.stepClimbing(1 / 120)).not.toThrow();
     expect(internals.body.position).toEqual({ x: 15.84, y: 600 });

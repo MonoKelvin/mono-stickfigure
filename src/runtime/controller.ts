@@ -1,4 +1,6 @@
-import { createPose, samplePose, LAND_DURATION, ROLL_DURATION, CLIMB_GRAB_DURATION, POSE_DURATION, STAND_DURATION, TURN_DURATION, TRANSITION_DURATION } from '../animation/rig';
+import { createPose, samplePose, LAND_DURATION, ROLL_DURATION, POSE_DURATION, STAND_DURATION, SIT_STAND_DURATION, TURN_DURATION, TRANSITION_DURATION } from '../animation/rig';
+import { captureClimbAttachment, stepClimbAttachment, sampleClimbAttachment, CLIMB_ATTACH_DURATION } from '../animation/climb';
+import type { ClimbAttachmentState, ClimbAttachmentSample } from '../animation/climb';
 import { fromClient, isViewportMount, readFrame, readViewport, selectFrame, toClient } from '../coordinates/frames';
 import type { FrameTransform, MotionFrame } from '../coordinates/frames';
 import { climbInterval, climbRoot, firstCollision, planJump, stepClimb, stepFlight, stepWalk } from '../motion/solver';
@@ -28,7 +30,7 @@ interface PhysicsSample {
   time: number;
   distance: number;
   climbDistance: number;
-  climbAttachTime: number;
+  climbAttachment: ClimbAttachmentState | null;
 }
 
 function positive(value: number, name: string): number {
@@ -70,7 +72,9 @@ export class StickFigureController implements StickFigure {
   private descentDistance = 0;
   private climb: ClimbContact | null = null;
   private climbDistance = 0;
-  private climbAttachTime = 0;
+  private climbAttachment: ClimbAttachmentState | null = null;
+  private attachmentGeneration = 0;
+  private standDuration = STAND_DURATION;
   private climbFlight: NavigationStep | null = null;
   private landStrength = 0;
   private rollSpeed = 0;
@@ -234,6 +238,7 @@ export class StickFigureController implements StickFigure {
     this.body = null;
     this.support = null;
     this.climb = null;
+    this.climbAttachment = null;
     this.planning = null;
     this.decisionHistory.length = 0;
     this.localPosition = null;
@@ -413,7 +418,9 @@ export class StickFigureController implements StickFigure {
   }
 
   private standThen(next: () => void): void {
+    if (this.action === 'stand-up') { this.afterTransition = next; return; }
     if (this.action === 'crouch' || this.action === 'sit' || this.action === 'prone' || this.action === 'roll' || this.pose.crouch > 0.1 || this.pose.sit > 0.1 || this.pose.prone > 0.1 || this.pose.roll > 0.1 || Math.abs(Math.sin(this.pose.rollAngle / 2)) > 0.1) {
+      this.standDuration = this.action === 'sit' || this.pose.sit > 0.1 ? SIT_STAND_DURATION : STAND_DURATION;
       this.afterTransition = next;
       this.setAction('stand-up');
     } else next();
@@ -809,7 +816,7 @@ export class StickFigureController implements StickFigure {
         time: this.simulationTime,
         distance: this.gaitDistance,
         climbDistance: this.climbDistance,
-        climbAttachTime: this.climbAttachTime,
+        climbAttachment: this.climbAttachment,
       };
       this.simulationTime += dt;
       this.actionTime += dt;
@@ -826,7 +833,7 @@ export class StickFigureController implements StickFigure {
       this.descentDistance = result.body.position.y < beforeY ? 0 : this.descentDistance + result.body.position.y - beforeY;
       this.body = result.body;
       if (result.climb) {
-        this.anchorClimb(this.store!.get(result.climb.surfaceId)!, result.climb.u);
+        this.anchorClimb(this.store!.get(result.climb.surfaceId)!, result.climb.u, result.grabVelocity!);
         if (this.route[0]?.kind === 'grab') this.route.shift();
         this.climbFlight = null;
         this.targetId = null;
@@ -889,7 +896,7 @@ export class StickFigureController implements StickFigure {
     let renderPosition = this.body!.position;
     let renderDistance = this.gaitDistance;
     let renderClimbDistance = this.climbDistance;
-    let renderClimbAttachTime = this.climbAttachTime;
+    let renderClimbAttachment: ClimbAttachmentSample | undefined = this.climbAttachment ? sampleClimbAttachment(null, this.climbAttachment, 1) : undefined;
     let renderTime = this.simulationTime;
     let renderActionTime = this.actionTime;
     let renderVelocity = this.body!.velocity;
@@ -910,7 +917,9 @@ export class StickFigureController implements StickFigure {
       }
       renderDistance = previous.distance + (this.gaitDistance - previous.distance) * alpha;
       renderClimbDistance = previous.climbDistance + (this.climbDistance - previous.climbDistance) * alpha;
-      renderClimbAttachTime = previous.climbAttachTime + (this.climbAttachTime - previous.climbAttachTime) * alpha;
+      if (this.climbAttachment && previous.frame === this.motionFrame && previous.climb?.surfaceId === this.climb?.surfaceId && previous.climb?.sourceRevision === this.climb?.sourceRevision) {
+        renderClimbAttachment = sampleClimbAttachment(previous.climbAttachment, this.climbAttachment, alpha);
+      }
       renderTime = previous.time + (this.simulationTime - previous.time) * alpha;
       renderVelocity = { x: previous.velocity.x + (this.body!.velocity.x - previous.velocity.x) * alpha, y: previous.velocity.y + (this.body!.velocity.y - previous.velocity.y) * alpha };
       if (previous.action === this.action && previous.actionTime <= this.actionTime) renderActionTime = previous.actionTime + (this.actionTime - previous.actionTime) * alpha;
@@ -932,8 +941,8 @@ export class StickFigureController implements StickFigure {
       landProgress: renderActionTime / LAND_DURATION, landStrength: this.landStrength,
       facing: this.facing, distance: renderDistance, horizontalSpeed: renderVelocity.x,
       turnProgress: this.action === 'turn' ? renderActionTime / TURN_DURATION : undefined,
-      actionDuration: this.action === 'roll' ? this.rollDuration : this.poseDuration,
-      climb: this.climb ? { normal: this.climb.normal, distance: renderClimbDistance, gripProgress: renderClimbAttachTime / CLIMB_GRAB_DURATION } : undefined,
+      actionDuration: this.action === 'roll' ? this.rollDuration : this.action === 'stand-up' ? this.standDuration : this.poseDuration,
+      climb: this.climb ? { normal: this.climb.normal, distance: renderClimbDistance, attachment: renderClimbAttachment, speed: Math.hypot(renderVelocity.x, renderVelocity.y) } : undefined,
       reach,
     });
     this.renderer.draw(renderPosition, this.pose);
@@ -991,7 +1000,7 @@ export class StickFigureController implements StickFigure {
       return;
     }
     if (this.action === 'turn' || this.action === 'stand-up') {
-      if (this.actionTime >= (this.action === 'turn' ? TURN_DURATION : STAND_DURATION)) this.completeTransition();
+      if (this.actionTime >= (this.action === 'turn' ? TURN_DURATION : this.standDuration)) this.completeTransition();
       return;
     }
     if (this.action === 'anticipate') {
@@ -1029,6 +1038,7 @@ export class StickFigureController implements StickFigure {
       if (result.blocked || result.edge) {
         this.finishAction('interrupted', result.blocked ? 'obstructed' : 'edge');
         this.finishMove('interrupted', result.blocked ? 'obstructed' : 'edge');
+        this.standDuration = STAND_DURATION;
         this.setAction('stand-up'); return;
       }
       if (progress >= 1) this.completeLanding();
@@ -1120,7 +1130,7 @@ export class StickFigureController implements StickFigure {
 
   private navigationPhysics(pace = this.pace): NavigationPhysics {
     const h = this.appearance.height;
-    return { gravity: this.gravityPixels, maxFallSpeed: this.physics.maxFallSpeed, climbSpeed: h * CLIMB_SPEED_FACTOR, grabDuration: CLIMB_GRAB_DURATION, climbDestination: this.goal?.climbAction ? this.goal.surfaceId : undefined, upwardSpeed: this.jumpSpeed(), maxHorizontalSpeed: h * 4.6, longUpwardSpeed: this.jumpSpeed(true), longHorizontalSpeed: h * 8, acceleration: h * 18, anticipation: TRANSITION_DURATION.anticipate, walkSpeed: h * (pace === 'sprint' ? 4.6 : pace === 'run' ? 2.6 : 0.85), footRadius: h * 0.26, bodyHeight: h };
+    return { gravity: this.gravityPixels, maxFallSpeed: this.physics.maxFallSpeed, climbSpeed: h * CLIMB_SPEED_FACTOR, grabDuration: CLIMB_ATTACH_DURATION, climbDestination: this.goal?.climbAction ? this.goal.surfaceId : undefined, upwardSpeed: this.jumpSpeed(), maxHorizontalSpeed: h * 4.6, longUpwardSpeed: this.jumpSpeed(true), longHorizontalSpeed: h * 8, acceleration: h * 18, anticipation: TRANSITION_DURATION.anticipate, walkSpeed: h * (pace === 'sprint' ? 4.6 : pace === 'run' ? 2.6 : 0.85), footRadius: h * 0.26, bodyHeight: h };
   }
 
   private beginRouteStep(): void {
@@ -1199,11 +1209,12 @@ export class StickFigureController implements StickFigure {
     }
     const step = this.route[0];
     const length = Math.hypot(surface.b.x - surface.a.x, surface.b.y - surface.a.y);
-    const beforeTime = this.climbAttachTime;
-    this.climbAttachTime += dt;
-    const drivingTime = Math.min(dt, Math.max(0, this.climbAttachTime - CLIMB_GRAB_DURATION));
-    const active = step?.kind === 'climb' && step.surfaceId === surface.id && !this.planning && this.simulationTime >= this.restUntil && this.climbAttachTime >= CLIMB_GRAB_DURATION;
-    if (active && beforeTime < CLIMB_GRAB_DURATION) this.setNavigation('moving', 'climb-started');
+    const before = this.climbAttachment!;
+    this.climbAttachment = stepClimbAttachment(before, dt, surface.normal!, this.appearance.height, this.gravityPixels);
+    if (!before.failed && this.climbAttachment.failed && this.goal) this.finishMove('interrupted', 'insufficient-space');
+    const drivingTime = before.ready ? dt : this.climbAttachment.ready ? Math.min(dt, Math.max(0, this.climbAttachment.time - CLIMB_ATTACH_DURATION)) : 0;
+    const active = step?.kind === 'climb' && step.surfaceId === surface.id && !this.planning && this.simulationTime >= this.restUntil && this.climbAttachment.ready;
+    if (active && !before.ready) this.setNavigation('moving', 'climb-started');
     const distance = active ? (step.u - this.climb.u) * length : 0;
     const acceleration = this.appearance.height * 1.4;
     const desired = Math.sign(distance) * Math.min(this.appearance.height * CLIMB_SPEED_FACTOR, Math.sqrt(2 * acceleration * Math.max(0, Math.abs(distance) - 0.05)));
@@ -1562,6 +1573,7 @@ export class StickFigureController implements StickFigure {
     this.visits.set(surface.id, (this.visits.get(surface.id) ?? 0) + 1);
     if (this.visits.size > 64) this.visits.delete(this.visits.keys().next().value!);
     this.climb = null;
+    this.climbAttachment = null;
     this.support = { surfaceId: surface.id, sourceRevision: surface.sourceRevision, u };
     this.body = { position: this.pointOn(surface, u), velocity: { x: 0, y: 0 } };
     this.decisionAt = this.simulationTime;
@@ -1571,7 +1583,7 @@ export class StickFigureController implements StickFigure {
     this.emit('surfacechange', { support: { ...this.support } });
   }
 
-  private anchorClimb(surface: SurfaceSnapshot, u: number): void {
+  private anchorClimb(surface: SurfaceSnapshot, u: number, velocity: Point): void {
     this.previousPhysics = null;
     if (this.support) this.emit('surfacechange', { support: null });
     this.support = null;
@@ -1584,7 +1596,7 @@ export class StickFigureController implements StickFigure {
     if (this.visits.size > 64) this.visits.delete(this.visits.keys().next().value!);
     this.descentDistance = 0;
     this.climbDistance = 0;
-    this.climbAttachTime = 0;
+    this.climbAttachment = captureClimbAttachment(++this.attachmentGeneration, velocity, surface.normal!, this.appearance.height, this.gravityPixels);
     this.setAction('climb');
     if (this.goal) this.setNavigation('moving', 'hands-grabbed');
     this.saveLocalPosition();
@@ -1593,6 +1605,7 @@ export class StickFigureController implements StickFigure {
   private releaseClimb(): void {
     this.previousPhysics = null;
     this.climb = null;
+    this.climbAttachment = null;
     this.unknownFrames = 0;
     this.descentDistance = 0;
     this.saveLocalPosition();

@@ -1,4 +1,4 @@
-import { BONES, JOINT } from '../animation/rig';
+import { BONES, JOINT, FOOT_HEEL_LENGTH, FOOT_TOE_LENGTH } from '../animation/rig';
 import type { Pose } from '../animation/rig';
 import type { Point } from '../scene/types';
 import type { Appearance } from '../types';
@@ -89,8 +89,8 @@ export class CanvasRenderer {
       const angle = pose.footAngles[index]!;
       const dx = Math.cos(angle) * this.appearance.height;
       const dy = Math.sin(angle) * this.appearance.height;
-      ctx.moveTo(x - direction * dx * 0.035, y - dy * 0.035);
-      ctx.lineTo(x + direction * dx * 0.075, y + dy * 0.075);
+      ctx.moveTo(x - direction * dx * FOOT_HEEL_LENGTH, y - dy * FOOT_HEEL_LENGTH);
+      ctx.lineTo(x + direction * dx * FOOT_TOE_LENGTH, y + dy * FOOT_TOE_LENGTH);
     }
     ctx.stroke();
 

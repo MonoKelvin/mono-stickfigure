@@ -47,10 +47,15 @@ describe('攀爬扫掠与锚点运动', () => {
     expect(root.x).toBeCloseTo(result.body.position.x, 8);
     expect(root.y).toBeCloseTo(result.body.position.y, 8);
     expect(result.body.velocity).toEqual({ x: 0, y: 0 });
+    expect(result.grabVelocity!.x).toBe(40);
+    expect(result.grabVelocity!.y).toBeCloseTo(-100 + 100 * time, 8);
     const partial = stepBody(body, [], 0.2, 100, 600, height * 0.26, height).body;
     const split = stepFlight(partial, [surface], 0.8, 100, 600, height * 0.26, height, surface.id);
     expect(split.climb!.u).toBeCloseTo(result.climb!.u, 8);
     expect(split.remainingTime).toBeCloseTo(result.remainingTime, 8);
+    expect(split.grabVelocity!.x).toBe(result.grabVelocity!.x);
+    expect(split.grabVelocity!.y).toBeCloseTo(result.grabVelocity!.y, 8);
+    expect(Object.keys(stepBody(body, [], 0.2, 100))).toEqual(['body', 'landing']);
   });
 
   it('抓附仅对明确目标启用，离开边段或已穿入边段不补吸附', () => {
@@ -81,6 +86,7 @@ describe('攀爬扫掠与锚点运动', () => {
     const obstacle = { ...platform('obstacle', 12, 14, 0), kind: 'fill' as const, bounds: { left: 12, right: 14, top: 0, bottom: 200 } };
     const result = stepFlight(body, [solid, climb, obstacle], 1, 100, 600, 4.16, height, climb.id);
     expect(result.climb).toBeNull();
+    expect(result.grabVelocity).toBeNull();
     expect(result.body.position.x).toBeCloseTo(12 - 4.16, 5);
   });
 
@@ -97,6 +103,7 @@ describe('攀爬扫掠与锚点运动', () => {
     expect(result.remainingTime).toBeCloseTo(1, 7);
     expect(result.body.position.x).toBeCloseTo(target.x, 7);
     expect(result.body.position.y).toBeCloseTo(target.y, 7);
+    expect(result.grabVelocity).toEqual({ x: 20, y: terminal });
   });
 
   it('攀爬通过沿面加速推进锚点，子步拆分一致且到边界停止', () => {
