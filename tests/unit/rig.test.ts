@@ -377,6 +377,24 @@ describe('人体翻滚与新增姿态', () => {
     }
   });
 
+  it('攀爬双腿自然向前屈膝，左右镜像与整个步态不反折', () => {
+    for (const facing of [1, -1] as const) for (const slope of [-0.17, 0, 0.17]) {
+      const normal = { x: -facing * Math.cos(slope), y: Math.sin(slope) };
+      const pose = createPose();
+      samplePose(pose, { height: h, action: 'idle', time: 0, dt: 1, facing, verticalVelocity: 0, landProgress: 0 });
+      for (let frame = 0; frame <= 200; frame++) {
+        samplePose(pose, { height: h, action: 'climb', time: 1, dt: 1 / 120, facing, verticalVelocity: 0, landProgress: 0, climb: { normal, distance: frame * h * 0.4 / 200, attachment: attachment(), speed: h * 0.4 } });
+        const hip = point(pose, JOINT.pelvis);
+        for (const [kneeId, footId] of [[JOINT.leftKnee, JOINT.leftFoot], [JOINT.rightKnee, JOINT.rightFoot]] as const) {
+          const knee = point(pose, kneeId), foot = point(pose, footId);
+          const bend = ((foot.x - hip.x) * (knee.y - hip.y) - (foot.y - hip.y) * (knee.x - hip.x)) * facing;
+          expect(bend, `${facing} ${slope} ${frame}`).toBeLessThanOrEqual(h * h * 1e-9);
+          expect(knee.x * normal.x + knee.y * normal.y + h * 0.26).toBeGreaterThanOrEqual(h * 0.009);
+        }
+      }
+    }
+  });
+
   it('抓附完整时序的膝分支连续，不在贴脚时突然反折', () => {
     for (const slope of [-0.17, 0, 0.17]) for (const velocity of [{ x: 60, y: 200 }, { x: 0, y: 0 }]) {
       const normal = { x: -Math.cos(slope), y: Math.sin(slope) };
@@ -386,6 +404,12 @@ describe('人体翻滚与新增姿态', () => {
       for (let frame = 0; frame <= 108; frame++) {
         samplePose(pose, { height: h, action: 'climb', time: frame / 120, dt: 1 / 120, facing: 1, verticalVelocity: 0, landProgress: 0, climb: { normal, distance: 0, attachment: state, speed: 0 } });
         const knees = [point(pose, JOINT.leftKnee), point(pose, JOINT.rightKnee)];
+        const hip = point(pose, JOINT.pelvis);
+        for (const [index, footId] of [JOINT.leftFoot, JOINT.rightFoot].entries()) {
+          const foot = point(pose, footId), knee = knees[index]!;
+          expect((foot.x - hip.x) * (knee.y - hip.y) - (foot.y - hip.y) * (knee.x - hip.x)).toBeLessThanOrEqual(h * h * 1e-9);
+          expect(knee.x * normal.x + knee.y * normal.y + h * 0.26).toBeGreaterThanOrEqual(h * 0.009);
+        }
         if (previous) for (const index of [0, 1]) expect(distance(knees[index]!, previous[index]!), `${slope} ${frame}`).toBeLessThan(h * 0.10);
         previous = knees;
         state = stepClimbAttachment(state, 1 / 120, normal, h, 980);
@@ -408,6 +432,9 @@ describe('人体翻滚与新增姿态', () => {
             expect(gap(toe), `${facing} ${slope} ${gravity} ${frame} toe${index}`).toBeGreaterThanOrEqual(-h * 1e-6);
             expect(gap(heel), `${facing} ${slope} ${gravity} ${frame} heel${index}`).toBeGreaterThanOrEqual(-h * 1e-6);
             if (state.ready) expect(gap(toe)).toBeCloseTo(0, 5);
+            const hip = point(pose, JOINT.pelvis), knee = point(pose, index === 0 ? JOINT.leftKnee : JOINT.rightKnee), foot = point(pose, index === 0 ? JOINT.leftFoot : JOINT.rightFoot);
+            expect(((foot.x - hip.x) * (knee.y - hip.y) - (foot.y - hip.y) * (knee.x - hip.x)) * facing).toBeLessThanOrEqual(h * h * 1e-9);
+            expect(gap(knee)).toBeGreaterThanOrEqual(h * 0.009);
           }
           state = stepClimbAttachment(state, 1 / 120, normal, h, gravity);
         }

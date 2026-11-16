@@ -148,7 +148,7 @@ test('双手先抓稳再贴脚，慢速攀爬保持真实接触', async ({ page 
 
 for (const height of [16, 24]) for (const button of ['demo-climb', 'demo-slope']) {
   test(`${height}px ${button}真实绘制端点不穿墙且贴脚后才沿边运动`, async ({ page }) => {
-    test.setTimeout(30000);
+    test.setTimeout(Math.max(test.info().timeout, 30000));
     await page.locator('#size').evaluate((input: HTMLInputElement, height) => {
       input.value = String(height); input.dispatchEvent(new Event('change', { bubbles: true }));
     }, height);
@@ -164,6 +164,12 @@ for (const height of [16, 24]) for (const button of ['demo-climb', 'demo-slope']
       const normal = sample.climb!.normal, wall = sample.surface!.a;
       const gap = (p: { x: number; y: number }) => (sample.root.x + p.x - wall.x) * normal.x + (sample.root.y + p.y - wall.y) * normal.y;
       for (const [index, bone] of sample.segments.slice(0, 11).entries()) expect(Math.hypot(bone.to.x - bone.from.x, bone.to.y - bone.from.y)).toBeCloseTo(height * lengths[index]!, 5);
+      for (const [thighIndex, shinIndex] of [[7, 8], [9, 10]] as const) {
+        const hip = sample.segments[thighIndex]!.from, knee = sample.segments[thighIndex]!.to, foot = sample.segments[shinIndex]!.to;
+        const bend = ((foot.x - hip.x) * (knee.y - hip.y) - (foot.y - hip.y) * (knee.x - hip.x)) * -Math.sign(normal.x);
+        expect(bend).toBeLessThanOrEqual(height * height * 1e-8);
+        expect(gap(knee)).toBeGreaterThanOrEqual(height * 0.009);
+      }
       const contacts = [sample.segments[4]!.to, sample.segments[6]!.to, sample.segments[11]!.to, sample.segments[12]!.to];
       for (const foot of sample.segments.slice(11)) {
         expect(gap(foot.to)).toBeGreaterThanOrEqual(-height * 1e-5);

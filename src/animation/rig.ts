@@ -444,7 +444,15 @@ export function samplePose(output: Pose, input: PoseInput): void {
   lean = mixAngle(lean, attachmentLean, output.climbing);
   const chest = { x: hip.x + Math.sin(lean) * h * 0.22, y: hip.y - Math.cos(lean) * h * 0.22 };
   if (climbing) {
+    // 为自然屈膝留足大腿的墙外空间，不通过反折膝盖避墙。
+    const minimumHipGap = h * (0.255 + 0.01);
+    const shift = Math.max(0, minimumHipGap - (hip.x * normal.x + hip.y * normal.y + h * 0.26));
+    hip.x += normal.x * shift; hip.y += normal.y * shift;
+    chest.x += normal.x * shift; chest.y += normal.y * shift;
     const origin = { x: climbingChest.x * h, y: climbingChest.y * h };
+    const originHipGap = origin.x * normal.x + origin.y * normal.y + h * 0.26 - h * 0.22 * (Math.sin(lean) * normal.x - Math.cos(lean) * normal.y);
+    const originShift = Math.max(0, minimumHipGap - originHipGap);
+    origin.x += normal.x * originShift; origin.y += normal.y * originShift;
     const dx = chest.x - origin.x, dy = chest.y - origin.y;
     const a = dx * dx + dy * dy;
     let amount = 1;
@@ -474,7 +482,7 @@ export function samplePose(output: Pose, input: PoseInput): void {
   const head = { x: neck.x + Math.sin(headLean) * h * 0.12, y: neck.y - Math.cos(headLean) * h * 0.12 };
   put(JOINT.head, head.x, head.y);
 
-  const legs = feet.map(foot => ({ ...foot, leg: solveTwoBone(hip, { x: foot.x, y: foot.y }, h * 0.255, h * 0.255, output.climbing > 1e-5 ? 1 : -1) }));
+  const legs = feet.map(foot => ({ ...foot, leg: solveTwoBone(hip, { x: foot.x, y: foot.y }, h * 0.255, h * 0.255, -1) }));
   for (let i = 0; i < legs.length; i++) {
     const { side, leg } = legs[i]!;
     const other = legs[1 - i]!.leg;
