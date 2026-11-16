@@ -1,5 +1,5 @@
-import { measureBorder, measureFill } from '../perception/dom-surfaces';
-import type { SurfaceMeasurement } from '../perception/dom-surfaces';
+import { measureBorder, measureClimbEdges, measureFill } from '../perception/dom-surfaces';
+import type { SurfaceMeasurement, SurfaceMeasurementContext } from '../perception/dom-surfaces';
 import { TextMeasurer } from '../perception/text-surfaces';
 import type { TextPart } from '../perception/text-surfaces';
 import type { Point, SurfaceSnapshot, Viewport } from './types';
@@ -54,6 +54,8 @@ export class SurfaceStore {
   private discovery: NearbyDiscovery | null = null;
   private nextDiscoveryAt = 0;
   private readonly elementMeasurements = new Map<Element, string | null>();
+  private readonly climbMeasurements = new Map<Element, string[]>();
+  private readonly elementFeatures = new WeakMap<Element, Set<string>>();
   private readonly textMeasurements = new Map<Text, Map<string, string[]>>();
   readonly pinned = new Set<string>();
   measuredElements = 0;
@@ -73,6 +75,7 @@ export class SurfaceStore {
     this.frameViewport = viewport;
     this.frameTime = performance.now();
     this.elementMeasurements.clear();
+    this.climbMeasurements.clear();
     this.textMeasurements.clear();
     this.measuredElements = 0;
   }
@@ -83,7 +86,16 @@ export class SurfaceStore {
     this.nextDiscoveryAt = 0;
     this.refreshMeasurements.clear();
     this.elementMeasurements.clear();
+    this.climbMeasurements.clear();
     this.textMeasurements.clear();
+  }
+
+  invalidateGeometry(): void {
+    for (const record of this.records.values()) {
+      const snapshot = record.snapshot;
+      if (snapshot.status === 'valid') record.snapshot = { ...snapshot, status: 'unknown', geometryVersion: snapshot.geometryVersion + 1 };
+    }
+    this.invalidate();
   }
 
   invalidateFonts(): void {
@@ -141,10 +153,11 @@ export class SurfaceStore {
     this.measuredElements++;
     const knownId = this.ids.get(element);
     const previous = knownId ? this.get(knownId) : null;
-    const fill = measureFill(element, viewport, this.colorTolerance);
+    const context: SurfaceMeasurementContext = {};
+    const fill = measureFill(element, viewport, this.colorTolerance, context);
     // Valid fills already win over borders below; avoid a second expensive
     // painted-edge measurement whose result could never be selected.
-    const border = fill?.status === 'valid' ? null : measureBorder(element, viewport, this.colorTolerance);
+    const border = fill?.status === 'valid' ? null : measureBorder(element, viewport, this.colorTolerance, context);
     const measured = fill?.status === 'valid' ? fill : border?.status === 'valid' ? border
       : previous?.kind === 'border' && border ? border
       : previous?.kind === 'fill' && fill ? fill
@@ -154,11 +167,38 @@ export class SurfaceStore {
       const id = this.sourceId(element);
       snapshot = this.commit(id, id, element, element, measured);
     } else snapshot = knownId ? this.invalidateRecord(knownId) : null;
+    this.commitClimbs(element, viewport, context);
     if (cached) {
       this.elementMeasurements.set(element, snapshot?.id ?? null);
       if (snapshot) this.rememberRefresh(snapshot, element);
     }
     return snapshot;
+  }
+
+  measureClimbs(element: Element, viewport: Viewport): SurfaceSnapshot[] {
+    this.measure(element, viewport);
+    return (this.climbMeasurements.get(element) ?? []).flatMap(id => {
+      const snapshot = this.get(id);
+      return snapshot ? [snapshot] : [];
+    });
+  }
+
+  private commitClimbs(element: Element, viewport: Viewport, context: SurfaceMeasurementContext): void {
+    const measured = measureClimbEdges(element, viewport, this.colorTolerance, context);
+    const previous = this.elementFeatures.get(element);
+    const ids = new Set<string>();
+    const primaryId = this.ids.get(element);
+    const protectPrimary = primaryId && this.records.has(primaryId) && !this.pinned.has(primaryId);
+    if (protectPrimary) this.pinned.add(primaryId);
+    for (const feature of measured) {
+      const sourceId = this.sourceId(element), id = `${sourceId}:climb:${feature.feature}`;
+      const snapshot = this.commit(id, sourceId, element, element, feature);
+      if (snapshot) { ids.add(id); this.rememberRefresh(snapshot, element); }
+    }
+    if (protectPrimary) this.pinned.delete(primaryId);
+    if (previous) for (const id of previous) if (!ids.has(id)) this.invalidateRecord(id);
+    this.elementFeatures.set(element, ids);
+    this.climbMeasurements.set(element, [...ids]);
   }
 
   measureTarget(element: Element, viewport: Viewport, footRadius = 0): SurfaceSnapshot | null {
@@ -232,13 +272,15 @@ export class SurfaceStore {
     const previous = this.records.get(id);
     const old = previous?.snapshot;
     const boundsChanged = old?.bounds?.left !== measured.bounds?.left || old?.bounds?.top !== measured.bounds?.top || old?.bounds?.right !== measured.bounds?.right || old?.bounds?.bottom !== measured.bounds?.bottom;
-    const changed = !old || boundsChanged || old.a.x !== measured.a.x || old.a.y !== measured.a.y || old.b.x !== measured.b.x || old.b.y !== measured.b.y || old.status !== measured.status || old.kind !== measured.kind || old.available.length !== measured.available.length || old.available.some((range, i) => range.start !== measured.available[i]?.start || range.end !== measured.available[i]?.end);
-    const identityChanged = old && ((old.status === 'invalid' && measured.status !== 'invalid') || old.kind !== measured.kind || previous?.textRevision !== textRevision);
+    const changed = !old || old.mode !== measured.mode || old.normal?.x !== measured.normal?.x || old.normal?.y !== measured.normal?.y || boundsChanged || old.a.x !== measured.a.x || old.a.y !== measured.a.y || old.b.x !== measured.b.x || old.b.y !== measured.b.y || old.status !== measured.status || old.kind !== measured.kind || old.available.length !== measured.available.length || old.available.some((range, i) => range.start !== measured.available[i]?.start || range.end !== measured.available[i]?.end);
+    const identityChanged = old && ((old.status === 'invalid' && measured.status !== 'invalid') || old.kind !== measured.kind || old.mode !== measured.mode || previous?.textRevision !== textRevision);
     const snapshot: SurfaceSnapshot = {
       id, sourceId,
       sourceRevision: !old || identityChanged ? ++this.nextSourceRevision : old.sourceRevision,
       geometryVersion: (old?.geometryVersion ?? 0) + Number(changed),
       kind: measured.kind, evidence: measured.evidence,
+      ...(measured.mode ? { mode: measured.mode } : {}),
+      ...(measured.normal ? { normal: measured.normal } : {}),
       a: measured.a, b: measured.b, available: measured.available, status: measured.status,
       ...(measured.bounds ? { bounds: measured.bounds } : {}),
     };
@@ -246,7 +288,7 @@ export class SurfaceStore {
       let victim: string | undefined;
       let distance = -1;
       const focus = this.discovery;
-      const proximity = (s: SurfaceSnapshot): number => s.status === 'invalid' || s.status === 'unknown' ? Infinity : Math.hypot(Math.max(s.a.x - focus!.point.x, 0, focus!.point.x - s.b.x), s.a.y - focus!.point.y);
+      const proximity = (s: SurfaceSnapshot): number => s.status === 'invalid' || s.status === 'unknown' ? Infinity : Math.hypot(Math.max(Math.min(s.a.x, s.b.x) - focus!.point.x, 0, focus!.point.x - Math.max(s.a.x, s.b.x)), Math.max(Math.min(s.a.y, s.b.y) - focus!.point.y, 0, focus!.point.y - Math.max(s.a.y, s.b.y)));
       let inspected = 0;
       for (const [key, record] of this.records) {
         if (this.pinned.has(key)) continue;
@@ -285,7 +327,7 @@ export class SurfaceStore {
     if (!record) return null;
     if (!record.node.isConnected) return this.invalidateRecord(id);
     const cached = this.refreshMeasurements.get(id);
-    if (viewport === this.frameViewport && cached?.snapshot === record.snapshot && this.frameTime - cached.measuredAt < REFRESH_REUSE_MS) {
+    if (record.snapshot.mode !== 'climb' && viewport === this.frameViewport && cached?.snapshot === record.snapshot && this.frameTime - cached.measuredAt < REFRESH_REUSE_MS) {
       const box = record.element.getBoundingClientRect();
       if (box.left === cached.box[0] && box.top === cached.box[1] && box.width === cached.box[2] && box.height === cached.box[3]) return record.snapshot;
       this.elementMeasurements.delete(record.element);
@@ -295,7 +337,8 @@ export class SurfaceStore {
       this.measureTextPart(record.node as Text, record.part, viewport);
       return this.records.get(id)?.snapshot ?? null;
     }
-    return this.measure(record.element, viewport);
+    this.measure(record.element, viewport);
+    return this.records.get(id)?.snapshot ?? null;
   }
 
   /** Discover unseen DOM candidates near the character, independently of the global walker. */
@@ -377,7 +420,7 @@ export class SurfaceStore {
       const record = this.records.get(id);
       if (!record) continue;
       const { a, b, sourceId } = record.snapshot;
-      if (point.x + radius < a.x || point.x - radius > b.x || Math.abs(point.y - a.y) > radius) continue;
+      if (point.x + radius < Math.min(a.x, b.x) || point.x - radius > Math.max(a.x, b.x) || point.y + radius < Math.min(a.y, b.y) || point.y - radius > Math.max(a.y, b.y)) continue;
       const key = record.part ? `${sourceId}:${record.part.start}:${record.part.end}` : id;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -409,6 +452,7 @@ export class SurfaceStore {
     this.records.clear();
     this.pinned.clear();
     this.elementMeasurements.clear();
+    this.climbMeasurements.clear();
     this.textMeasurements.clear();
     this.frameViewport = null;
     this.refreshMeasurements.clear();

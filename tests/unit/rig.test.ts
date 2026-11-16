@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { solveTwoBone } from '../../src/animation/ik';
-import { createPose, JOINT, samplePose } from '../../src/animation/rig';
+import { BONES, createPose, JOINT, ROLL_DURATION, samplePose, STAND_DURATION } from '../../src/animation/rig';
 import type { ActionId } from '../../src/types';
 
 const distance = (a: { x: number; y: number }, b: { x: number; y: number }) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -169,5 +169,165 @@ describe('形状与动作过渡', () => {
       }
     }
     expect(pose.transition).toBe(1);
+  });
+});
+
+describe('人体翻滚与新增姿态', () => {
+  const h = 24;
+  const point = (pose: ReturnType<typeof createPose>, id: number) => ({ x: pose.joints[id * 2]!, y: pose.joints[id * 2 + 1]! });
+  const sample = (action: ActionId, time: number, facing: 1 | -1 = 1) => {
+    const pose = createPose();
+    samplePose(pose, { height: h, action, time, dt: 1, facing, verticalVelocity: 0, landProgress: 0, actionDuration: ROLL_DURATION,
+      climb: { normal: { x: -facing * Math.cos(0.15), y: Math.sin(0.15) }, distance: time * h * 0.38 } });
+    return pose;
+  };
+
+  it('新增动作和翻滚每个阶段保持全部骨长，左右朝向只镜像一次', () => {
+    const lengths = [0.12, 0.065, 0.22, 0.19, 0.18, 0.19, 0.18, 0.255, 0.255, 0.255, 0.255];
+    for (const action of ['sit', 'question', 'run-in-place', 'climb', 'roll'] as const) {
+      for (let frame = 0; frame <= 100; frame++) {
+        const right = sample(action, frame * ROLL_DURATION / 100);
+        const left = sample(action, frame * ROLL_DURATION / 100, -1);
+        for (const [index, bone] of BONES.entries()) {
+          expect(distance(point(right, bone[0]), point(right, bone[1])), `${action} ${frame} ${index}`).toBeCloseTo(h * lengths[index]!, 7);
+        }
+        for (let i = 0; i < right.joints.length; i += 2) {
+          expect(left.joints[i], `${action} ${frame}`).toBeCloseTo(-right.joints[i]!, 7);
+          expect(left.joints[i + 1], `${action} ${frame}`).toBeCloseTo(right.joints[i + 1]!, 7);
+        }
+        expect([...right.joints].every(Number.isFinite)).toBe(true);
+      }
+    }
+  });
+
+  it('坐姿臀部、后撑双手和不对称双脚跟接地，起身保持脚跟接触', () => {
+    for (const facing of [1, -1] as const) {
+      const pose = sample('sit', 1, facing);
+      expect(point(pose, JOINT.pelvis).y).toBeCloseTo(0, 5);
+      for (const hand of [JOINT.leftHand, JOINT.rightHand]) {
+        expect(point(pose, hand).y).toBeCloseTo(0, 5);
+        expect(point(pose, hand).x * facing).toBeLessThan(point(pose, JOINT.pelvis).x * facing);
+      }
+      for (const [index, foot] of [JOINT.leftFoot, JOINT.rightFoot].entries()) {
+        expect(point(pose, foot).y - Math.sin(pose.footAngles[index]!) * h * 0.035).toBeCloseTo(0, 5);
+      }
+      expect(Math.abs(point(pose, JOINT.leftFoot).x - point(pose, JOINT.rightFoot).x)).toBeGreaterThan(h * 0.1);
+      const seatedHead = point(pose, JOINT.head).y;
+      for (let frame = 0; frame <= 60; frame++) samplePose(pose, { height: h, action: 'stand-up', time: frame * STAND_DURATION / 60, dt: 1 / 120, facing, verticalVelocity: 0, landProgress: 0 });
+      expect(pose.sit).toBe(0);
+      expect(point(pose, JOINT.head).y).toBeLessThan(seatedHead - h * 0.3);
+    }
+  });
+
+  it('疑问只用一只手上下揉头，站立脚和另一只手保持稳定', () => {
+    const a = sample('question', 0.15);
+    const b = sample('question', 0.55);
+    expect(Math.abs(point(a, JOINT.rightHand).y - point(b, JOINT.rightHand).y)).toBeGreaterThan(h * 0.04);
+    for (const pose of [a, b]) {
+      expect(distance(point(pose, JOINT.rightHand), point(pose, JOINT.head))).toBeLessThan(h * 0.1);
+      expect(point(pose, JOINT.leftFoot).y).toBeCloseTo(0, 7);
+      expect(point(pose, JOINT.rightFoot).y).toBeCloseTo(0, 7);
+    }
+    expect(point(a, JOINT.leftHand)).toEqual(point(b, JOINT.leftHand));
+  });
+
+  it('原地跑按时间抬腿摆肘，不制造平台行程', () => {
+    const pose = createPose();
+    const ankles: number[][] = [];
+    const elbows: number[] = [];
+    for (let frame = 0; frame < 120; frame++) {
+      samplePose(pose, { height: h, action: 'run-in-place', time: frame / 120, dt: 1 / 120, facing: 1, verticalVelocity: 0, landProgress: 0, distance: 0, horizontalSpeed: 0 });
+      if (frame > 40) { ankles.push([point(pose, JOINT.leftFoot).y, point(pose, JOINT.rightFoot).y]); elbows.push(point(pose, JOINT.leftElbow).x); }
+      expect(pose.distance).toBe(0);
+      expect(pose.phase).toBe(0);
+    }
+    expect(ankles.some(([left, right]) => left! < -h * 0.2 && Math.abs(right!) < 1e-6)).toBe(true);
+    expect(ankles.some(([left, right]) => right! < -h * 0.2 && Math.abs(left!) < 1e-6)).toBe(true);
+    expect(Math.max(...elbows) - Math.min(...elbows)).toBeGreaterThan(h * 0.1);
+  });
+
+  it('先双手抓墙，再依次贴脚；未贴脚时保持自然悬垂且骨长不变', () => {
+    const at = (gripProgress: number) => {
+      const pose = createPose();
+      samplePose(pose, { height: h, action: 'climb', time: 0, dt: 1, facing: 1, verticalVelocity: 0, landProgress: 0, climb: { normal: { x: -1, y: 0 }, distance: 0, gripProgress } });
+      return pose;
+    };
+    const hanging = at(0);
+    for (const hand of [JOINT.leftHand, JOINT.rightHand]) expect(point(hanging, hand).x).toBeCloseTo(h * 0.26, 5);
+    for (const foot of [JOINT.leftFoot, JOINT.rightFoot]) expect(point(hanging, foot).x).toBeLessThan(h * 0.1);
+    const firstFoot = at(0.60);
+    expect(point(firstFoot, JOINT.leftFoot).x).toBeCloseTo(h * 0.26, 5);
+    expect(point(firstFoot, JOINT.rightFoot).x).toBeLessThan(h * 0.1);
+    const braced = at(1);
+    for (const foot of [JOINT.leftFoot, JOINT.rightFoot]) expect(point(braced, foot).x).toBeCloseTo(h * 0.26, 5);
+    for (const pose of [hanging, firstFoot, braced]) {
+      for (const [elbow, hand] of [[JOINT.leftElbow, JOINT.leftHand], [JOINT.rightElbow, JOINT.rightHand]] as const) {
+        expect(distance(point(pose, JOINT.chest), point(pose, elbow))).toBeCloseTo(h * 0.19, 6);
+        expect(distance(point(pose, elbow), point(pose, hand))).toBeCloseTo(h * 0.18, 6);
+      }
+      for (const [knee, foot] of [[JOINT.leftKnee, JOINT.leftFoot], [JOINT.rightKnee, JOINT.rightFoot]] as const) {
+        expect(distance(point(pose, JOINT.pelvis), point(pose, knee))).toBeCloseTo(h * 0.255, 6);
+        expect(distance(point(pose, knee), point(pose, foot))).toBeCloseTo(h * 0.255, 6);
+      }
+    }
+  });
+
+  it('从跳跃进入抓附的首帧锁住双手，不因全身融合而滑离墙面', () => {
+    const pose = createPose();
+    samplePose(pose, { height: h, action: 'jump', time: 0.15, dt: 1, facing: 1, verticalVelocity: -100, landProgress: 0, reach: { normal: { x: -1, y: 0 }, distance: h * 0.26, progress: 1 } });
+    samplePose(pose, { height: h, action: 'climb', time: 0, dt: 1 / 60, facing: 1, verticalVelocity: 0, landProgress: 0, climb: { normal: { x: -1, y: 0 }, distance: 0, gripProgress: 0 } });
+    for (const hand of [JOINT.leftHand, JOINT.rightHand]) expect(point(pose, hand).x).toBeCloseTo(h * 0.26, 5);
+    for (const foot of [JOINT.leftFoot, JOINT.rightFoot]) expect(point(pose, foot).x).toBeLessThan(h * 0.1);
+  });
+
+  it('攀爬每次只移动一个肢体，其余三个抓点留在墙面', () => {
+    for (const phase of [0.1, 0.35, 0.6, 0.85]) {
+      const pose = createPose();
+      samplePose(pose, { height: h, action: 'climb', time: 1, dt: 1, facing: 1, verticalVelocity: 0, landProgress: 0, climb: { normal: { x: -1, y: 0 }, distance: phase * h * 0.4, gripProgress: 1 } });
+      const planted = [JOINT.leftHand, JOINT.rightHand, JOINT.leftFoot, JOINT.rightFoot].filter(id => Math.abs(point(pose, id).x - h * 0.26) < h * 0.01);
+      expect(planted).toHaveLength(3);
+    }
+  });
+
+  it('靠墙的空中阶段先伸双手，不拉伸手臂去追不可达抓点', () => {
+    const pose = createPose();
+    samplePose(pose, { height: h, action: 'jump', time: 0.15, dt: 1, facing: 1, verticalVelocity: -100, landProgress: 0, reach: { normal: { x: -1, y: 0 }, distance: h * 0.6, progress: 1 } });
+    for (const [elbow, hand] of [[JOINT.leftElbow, JOINT.leftHand], [JOINT.rightElbow, JOINT.rightHand]] as const) {
+      expect(point(pose, hand).x).toBeGreaterThan(point(pose, JOINT.chest).x);
+      expect(distance(point(pose, JOINT.chest), point(pose, elbow))).toBeCloseTo(h * 0.19, 6);
+      expect(distance(point(pose, elbow), point(pose, hand))).toBeCloseTo(h * 0.18, 6);
+    }
+  });
+
+  it('攀爬抓点落在真实法向定义的边段上，支撑脚不随根沿边移动而滑动', () => {
+    for (const angle of [0, 0.15, -0.15]) {
+      const normal = { x: -Math.cos(angle), y: Math.sin(angle) };
+      const tangent = { x: -normal.y, y: normal.x };
+      const samples = [h * 0.02, h * 0.08].map((d) => {
+        const pose = createPose();
+        samplePose(pose, { height: h, action: 'climb', time: 1, dt: 1, facing: 1, verticalVelocity: 0, landProgress: 0, climb: { normal, distance: d } });
+        const foot = point(pose, JOINT.leftFoot);
+        const root = { x: normal.x * h * 0.26 + tangent.x * d, y: normal.y * h * 0.26 + tangent.y * d };
+        const planted = { x: root.x + foot.x, y: root.y + foot.y };
+        expect(planted.x * normal.x + planted.y * normal.y).toBeCloseTo(0, 5);
+        return planted;
+      });
+      expect(samples[0]!.x).toBeCloseTo(samples[1]!.x, 5);
+      expect(samples[0]!.y).toBeCloseTo(samples[1]!.y, 5);
+    }
+  });
+
+  it('翻滚先撑手再由肩背承接，收腿不重叠，结束没有残余整圈旋转', () => {
+    const brace = sample('roll', ROLL_DURATION * 0.16);
+    expect(point(brace, JOINT.leftHand).y).toBeCloseTo(0, 7);
+    expect(point(brace, JOINT.rightHand).y).toBeCloseTo(0, 7);
+    const back = sample('roll', ROLL_DURATION * 0.50);
+    expect(point(back, JOINT.chest).y).toBeCloseTo(0, 7);
+    expect(distance(point(back, JOINT.leftFoot), point(back, JOINT.rightFoot))).toBeGreaterThan(h * 0.15);
+    const pose = sample('roll', ROLL_DURATION);
+    for (let frame = 0; frame < 90; frame++) samplePose(pose, { height: h, action: 'walk', time: frame / 120, dt: 1 / 120, facing: 1, verticalVelocity: 0, landProgress: 0, distance: frame * h / 120, horizontalSpeed: h });
+    expect(pose.rollAngle).toBe(0);
+    expect(pose.roll).toBeLessThan(1e-5);
+    expect(point(pose, JOINT.head).y).toBeLessThan(-h * 0.8);
   });
 });

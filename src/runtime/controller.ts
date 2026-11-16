@@ -1,18 +1,18 @@
-import { createPose, samplePose, LAND_DURATION, ROLL_DURATION, POSE_DURATION, STAND_DURATION, TURN_DURATION, TRANSITION_DURATION } from '../animation/rig';
+import { createPose, samplePose, LAND_DURATION, ROLL_DURATION, CLIMB_GRAB_DURATION, POSE_DURATION, STAND_DURATION, TURN_DURATION, TRANSITION_DURATION } from '../animation/rig';
 import { fromClient, isViewportMount, readFrame, readViewport, selectFrame, toClient } from '../coordinates/frames';
 import type { FrameTransform, MotionFrame } from '../coordinates/frames';
-import { stepBody, stepWalk } from '../motion/solver';
-import { findRoute, firstLanding, planTakeoff, reachableRoutes } from '../motion/navigation';
-import type { NavigationPhysics, NavigationStep, NavigationTarget, TakeoffPlan } from '../motion/navigation';
+import { climbInterval, climbRoot, firstCollision, planJump, stepClimb, stepFlight, stepWalk } from '../motion/solver';
+import { createPlanningJob, firstLanding, planTakeoff } from '../motion/navigation';
+import type { NavigationPhysics, NavigationStep, NavigationTarget, PlanningJob, TakeoffPlan } from '../motion/navigation';
 import { CanvasRenderer } from '../rendering/canvas';
 import { SurfaceStore } from '../scene/store';
-import type { Anchor, Body, Point, SurfaceSnapshot, Viewport } from '../scene/types';
-import type { ActionId, ActionOptions, ActionResult, Appearance, Diagnostics, LifecycleStatus, MoveOptions, MoveTarget, PauseReason, Physics, Recognition, PlaceResult, PlaceTarget, StartResult, StickFigure, StickFigureEvents, StickFigureOptions, StickFigureSnapshot } from '../types';
+import type { Anchor, Body, ClimbContact, Point, SurfaceSnapshot, Viewport } from '../scene/types';
+import type { ActionId, ActionOptions, ActionResult, Appearance, Diagnostics, NavigationDecision, NavigationDiagnostics, LifecycleStatus, MoveOptions, MoveTarget, PauseReason, Physics, Recognition, PlaceResult, PlaceTarget, StartResult, StickFigure, StickFigureEvents, StickFigureOptions, StickFigureSnapshot } from '../types';
 import { FixedStepClock } from './scheduler';
-import { chooseAutonomousPose, recentPenalty } from './autonomy';
-import type { AutonomousPose } from './autonomy';
+import { recentPenalty } from './autonomy';
 
-const ACTIONS: readonly ActionId[] = ['idle', 'walk', 'run', 'sprint', 'turn', 'wave', 'crouch', 'rest', 'prone', 'stand-up', 'jump', 'run-jump', 'running-long-jump', 'fall', 'land-soft', 'roll'];
+const ACTIONS: readonly ActionId[] = ['idle', 'walk', 'run', 'sprint', 'turn', 'wave', 'crouch', 'rest', 'prone', 'stand-up', 'jump', 'run-jump', 'running-long-jump', 'fall', 'land-soft', 'roll', 'sit', 'question', 'run-in-place', 'climb'];
+const CLIMB_SPEED_FACTOR = 0.4;
 type JumpTarget = NavigationTarget & { sourceRevision: number };
 type MovingAction = 'walk' | 'run' | 'sprint';
 type PendingEvent = { type: keyof StickFigureEvents; payload: StickFigureEvents[keyof StickFigureEvents] };
@@ -21,11 +21,14 @@ interface PhysicsSample {
   position: Point;
   velocity: Point;
   support: Anchor | null;
+  climb: ClimbContact | null;
   frame: MotionFrame | null;
   action: ActionId;
   actionTime: number;
   time: number;
   distance: number;
+  climbDistance: number;
+  climbAttachTime: number;
 }
 
 function positive(value: number, name: string): number {
@@ -41,9 +44,8 @@ export class StickFigureController implements StickFigure {
   private autonomous: boolean;
   private simulationTime = 0;
   private decisionAt = 0;
-  private decisions = 0;
   private walkDuration = 0;
-  private goal: (NavigationTarget & { sourceRevision: number; automatic: boolean }) | null = null;
+  private goal: (NavigationTarget & { sourceRevision: number; automatic: boolean; climbAction?: boolean }) | null = null;
   private route: NavigationStep[] = [];
   private pace: MovingAction = 'walk';
   private goalChangeAt = 0;
@@ -55,18 +57,28 @@ export class StickFigureController implements StickFigure {
   private actionTarget: JumpTarget | null = null;
   private dash: { target: JumpTarget | null; long: boolean; phase: 'position' | 'run'; direction: 1 | -1; startU: number; launchU: number; speed: number } | null = null;
   private resumeMotion: { action: MovingAction; duration: number } | null = null;
-  private landingRoll = false;
+  private planning: PlanningJob | null = null;
+  private planningAnchor: Anchor | null = null;
+  private readonly navigationBudget: number;
+  private navigation: NavigationDiagnostics = { status: 'waiting', goalId: 0, distance: null, reason: 'created', planningMs: 0, candidates: 0, expanded: 0, checkedEdges: 0, replans: 0, history: [] };
+  private readonly decisionHistory: NavigationDecision[] = [];
+  private nextGoalId = 0;
+  private retryAt = 0;
+  private retries = 0;
+  private exploring = false;
+  private restUntil = 0;
+  private descentDistance = 0;
+  private climb: ClimbContact | null = null;
+  private climbDistance = 0;
+  private climbAttachTime = 0;
+  private climbFlight: NavigationStep | null = null;
   private landStrength = 0;
   private rollSpeed = 0;
   private rollDuration = ROLL_DURATION;
   private poseDuration = 0;
   private readonly visits = new Map<string, number>();
-  private localGoals = 0;
   private explorationTarget: Point | null = null;
-  private readonly recentAutonomousPoses: AutonomousPose[] = [];
   private readonly recentSurfaces: string[] = [];
-  private stagnantDecisions = 0;
-  private decisionDistance = 0;
   private gaitDistance = 0;
   private readonly budget: number;
   private readonly limit: number;
@@ -90,6 +102,8 @@ export class StickFigureController implements StickFigure {
   private targetId: string | null = null;
   private targetRevision: number | null = null;
   private ignoredId: string | null = null;
+  private ignoredFill: Element | null = null;
+  private ignoredRevision: number | null = null;
   private ignoredTime = 0;
   private entering = false;
   private enteringTime = 0;
@@ -114,11 +128,13 @@ export class StickFigureController implements StickFigure {
   constructor(options: StickFigureOptions = {}) {
     this.options = { ...options };
     this.appearance = { height: 16, color: '#181818', lineWidth: 1.2, head: 'circle', ...options.appearance };
-    this.physics = { gravity: 980, jumpHeight: 52, ...options.physics };
+    this.physics = { gravity: 9.8, jumpHeight: 52, maxFallSpeed: 600, ...options.physics };
     this.recognition = { colorTolerance: 0.01, ...options.recognition };
     positive(this.recognition.colorTolerance, 'recognition.colorTolerance');
     if (this.recognition.colorTolerance > 1) throw new RangeError('colorTolerance 应不超过 1');
     positive(this.physics.gravity, 'physics.gravity');
+    if (this.physics.gravity < 4 || this.physics.gravity > 20) throw new RangeError('physics.gravity 应在 4–20 m/s² 之间');
+    positive(this.physics.maxFallSpeed, 'physics.maxFallSpeed');
     positive(this.physics.jumpHeight, 'physics.jumpHeight');
     if (typeof (options.autonomous ?? true) !== 'boolean') throw new TypeError('autonomous 必须是布尔值');
     this.autonomous = options.autonomous ?? true;
@@ -126,6 +142,7 @@ export class StickFigureController implements StickFigure {
     positive(this.appearance.lineWidth, 'appearance.lineWidth');
     if (this.appearance.height > 256 || this.appearance.lineWidth > this.appearance.height / 4) throw new RangeError('人物高度应不超过 256，线宽应不超过高度的四分之一');
     if (!['circle', 'square'].includes(this.appearance.head)) throw new TypeError('当前仅支持 circle / square 头型');
+    this.navigationBudget = positive(options.performance?.navigationBudgetMs ?? 1, 'navigationBudgetMs');
     this.budget = positive(options.performance?.scanBudgetMs ?? 2, 'scanBudgetMs');
     this.limit = positive(options.performance?.maxSurfaces ?? 1500, 'maxSurfaces');
     if (!Number.isInteger(this.limit)) throw new RangeError('maxSurfaces 必须是整数');
@@ -194,7 +211,7 @@ export class StickFigureController implements StickFigure {
     if (typeof enabled !== 'boolean') throw new TypeError('autonomous 必须是布尔值');
     if (this.status === 'destroyed') return;
     this.autonomous = enabled;
-    this.decisionAt = this.simulationTime + 0.3;
+    this.decisionAt = this.simulationTime;
     if (!enabled && this.goal?.automatic) this.finishMove('interrupted', 'autonomy-disabled');
     if (!enabled && !this.pendingAction) {
       this.dash = null;
@@ -216,6 +233,9 @@ export class StickFigureController implements StickFigure {
     this.options = {};
     this.body = null;
     this.support = null;
+    this.climb = null;
+    this.planning = null;
+    this.decisionHistory.length = 0;
     this.localPosition = null;
     this.motionFrame = null;
     this.pauses.clear();
@@ -237,13 +257,11 @@ export class StickFigureController implements StickFigure {
     this.pose.phase = 0;
     this.pose.distance = 0;
     this.pose.walking = 0;
-    this.decisions = 0;
     this.visits.clear();
     this.visits.set(resolved.surface.id, 1);
-    this.localGoals = 0;
-    this.decisionAt = this.simulationTime + 0.8;
+    this.decisionAt = this.simulationTime;
     this.entering = false;
-    this.ignoredId = null;
+    this.clearIgnored();
     this.pauses.delete('offscreen');
     this.pauses.delete('verification');
     this.pauses.delete('boundary-wait');
@@ -255,6 +273,10 @@ export class StickFigureController implements StickFigure {
   }
 
   moveTo(target: MoveTarget, options: MoveOptions = {}): Promise<ActionResult> {
+    return this.startMove(target, options, false);
+  }
+
+  private startMove(target: MoveTarget, options: MoveOptions, climbAction: boolean): Promise<ActionResult> {
     if (!this.body || !this.store || !this.doc || this.status !== 'running' || this.pauses.size) return Promise.resolve({ status: 'rejected', reason: 'not-running' });
     if (this.reduced) return Promise.resolve({ status: 'rejected', reason: 'reduced-motion' });
     const pace = options.pace ?? 'walk';
@@ -262,18 +284,22 @@ export class StickFigureController implements StickFigure {
     if (options.signal?.aborted) return Promise.resolve({ status: 'interrupted', reason: 'aborted' });
     const resolved = this.resolveMoveTarget(target);
     if (!resolved) return Promise.resolve({ status: 'rejected', reason: 'no-visible-support' });
-    const goal = { surfaceId: resolved.surface.id, u: resolved.u, sourceRevision: resolved.surface.sourceRevision, automatic: false };
-    const route = this.support ? findRoute(this.store.snapshots(), this.support, goal, this.navigationPhysics(pace)) : [];
-    if (!route) return Promise.resolve({ status: 'rejected', reason: 'unreachable' });
+    const goal = { surfaceId: resolved.surface.id, u: resolved.u, sourceRevision: resolved.surface.sourceRevision, automatic: false, climbAction };
     this.finishAction('interrupted', 'move-requested');
     this.finishMove('interrupted', 'replaced');
     const promise = new Promise<ActionResult>((resolve) => { this.pendingMove = resolve; });
     this.bindAbort(options.signal, 'move');
     this.goal = goal;
-    this.route = route;
+    this.route = [];
     this.pace = pace;
+    this.navigation.goalId = ++this.nextGoalId;
+    this.retries = 0;
+    this.exploring = false;
+    this.restUntil = 0;
     this.emit('targetchange', { target: this.pointOn(resolved.surface, resolved.u) });
-    if (this.support) this.readyThen(() => this.beginRouteStep());
+    if (this.support) this.readyThen(() => this.replanMove());
+    else if (this.climb) this.replanMove();
+    else this.setNavigation('planning', 'awaiting-contact');
     this.schedule();
     this.flushEvents();
     return promise;
@@ -287,6 +313,23 @@ export class StickFigureController implements StickFigure {
     if ((action === 'walk' || action === 'run' || action === 'sprint') && options.target) return this.moveTo(options.target, { pace: action, ...(options.signal ? { signal: options.signal } : {}) });
     if (!this.body || !this.doc || !this.store || this.status !== 'running' || this.pauses.size) return Promise.resolve({ status: 'rejected', reason: 'not-running' });
     if (this.reduced && action !== 'idle') return Promise.resolve({ status: 'rejected', reason: 'reduced-motion' });
+    if (action === 'climb') {
+      const target = options.target ? this.resolveClimbTarget(options.target) : this.nearestClimb();
+      if (!target) return Promise.resolve({ status: 'rejected', reason: 'no-visible-climb' });
+      return this.startMove({ surfaceId: target.surface.id, u: target.u }, { pace: 'run', ...(options.signal ? { signal: options.signal } : {}) }, true);
+    }
+    if (this.climb && action === 'idle') {
+      this.finishAction('interrupted', 'replaced');
+      this.finishMove('interrupted', 'action-requested');
+      this.body.velocity = { x: 0, y: 0 };
+      return Promise.resolve({ status: 'completed' });
+    }
+    if (this.climb && action === 'fall') {
+      this.finishMove('interrupted', 'action-requested');
+      this.releaseClimb();
+      this.setAction('fall');
+      return Promise.resolve({ status: 'completed' });
+    }
     if (!this.support) return Promise.resolve({ status: 'rejected', reason: 'no-support' });
     const current = this.store.refresh(this.support.surfaceId, readViewport(this.doc));
     if (!current || current.status !== 'valid' || current.sourceRevision !== this.support.sourceRevision || !this.fits(current, this.support.u)) return Promise.resolve({ status: 'rejected', reason: 'support-invalid' });
@@ -298,6 +341,7 @@ export class StickFigureController implements StickFigure {
     const direction = options.direction ?? this.facing;
     const rollDuration = options.duration ?? ROLL_DURATION;
     if (action === 'roll' && rollDuration < 0.65) return Promise.resolve({ status: 'rejected', reason: 'invalid-duration' });
+    if (action === 'sit' && !this.fitsSit(current, this.support.u, direction)) return Promise.resolve({ status: 'rejected', reason: 'insufficient-space' });
     if (action === 'prone' && !this.fitsProne(current, this.support.u, direction)) return Promise.resolve({ status: 'rejected', reason: 'insufficient-space' });
     if (action === 'roll' && !this.fitsRoll(current, this.support.u, direction, rollDuration)) return Promise.resolve({ status: 'rejected', reason: 'insufficient-space' });
     let jumpTarget: JumpTarget | null = null;
@@ -324,7 +368,7 @@ export class StickFigureController implements StickFigure {
       this.readyThen(() => direction !== this.facing ? this.beginTurn(direction, start) : start());
     } else if (action === 'turn') {
       this.readyThen(() => this.beginTurn(options.direction ?? (this.facing === 1 ? -1 : 1), () => { this.setAction('idle'); this.finishAction('completed'); }));
-    } else if (action === 'wave' || action === 'crouch' || action === 'rest' || action === 'prone') {
+    } else if (action === 'wave' || action === 'crouch' || action === 'rest' || action === 'prone' || action === 'sit' || action === 'question' || action === 'run-in-place') {
       this.readyThen(() => {
         const start = () => { this.poseDuration = options.duration ?? POSE_DURATION[action]; this.setAction(action); };
         if (direction !== this.facing) this.beginTurn(direction, start);
@@ -369,7 +413,7 @@ export class StickFigureController implements StickFigure {
   }
 
   private standThen(next: () => void): void {
-    if (this.action === 'crouch' || this.action === 'prone' || this.action === 'roll' || this.pose.crouch > 0.1 || this.pose.prone > 0.1 || this.pose.roll > 0.1 || Math.abs(Math.sin(this.pose.rollAngle / 2)) > 0.1) {
+    if (this.action === 'crouch' || this.action === 'sit' || this.action === 'prone' || this.action === 'roll' || this.pose.crouch > 0.1 || this.pose.sit > 0.1 || this.pose.prone > 0.1 || this.pose.roll > 0.1 || Math.abs(Math.sin(this.pose.rollAngle / 2)) > 0.1) {
       this.afterTransition = next;
       this.setAction('stand-up');
     } else next();
@@ -406,8 +450,12 @@ export class StickFigureController implements StickFigure {
     else this.standThen(prepare);
   }
 
+  private get gravityPixels(): number {
+    return this.physics.gravity * 100;
+  }
+
   private jumpSpeed(long = false): number {
-    return Math.sqrt(2 * this.physics.gravity * this.physics.jumpHeight * (long ? 1.65 : 1));
+    return Math.sqrt(2 * this.gravityPixels * this.physics.jumpHeight * (long ? 1.65 : 1));
   }
 
   private beginDash(target: JumpTarget | null, long: boolean, direction: 1 | -1, plan?: TakeoffPlan): void {
@@ -453,7 +501,7 @@ export class StickFigureController implements StickFigure {
   private launchJump(): void {
     const jump = this.pendingJump;
     if (!jump || !this.support || !this.body) return;
-    const velocity = { x: this.body.velocity.x, y: -this.jumpSpeed(jump.long) };
+    const velocity = { x: this.body.velocity.x, y: this.climbFlight?.kind === 'grab' ? this.climbFlight.takeoff!.velocity.y : -this.jumpSpeed(jump.long) };
     if (Math.abs(velocity.x) > 0.5 && Math.sign(velocity.x) !== this.facing) {
       this.readyThen(() => this.queueJump(jump.target, jump.long));
       return;
@@ -463,14 +511,16 @@ export class StickFigureController implements StickFigure {
       if (!surface || surface.status !== 'valid' || surface.sourceRevision !== jump.target.sourceRevision) {
         this.finishAction('interrupted', 'target-invalid'); this.finishMove('interrupted', 'target-invalid'); this.setAction('idle'); return;
       }
-      const landing = firstLanding(this.body.position, velocity, this.store!.snapshots(), this.physics.gravity, this.appearance.height * 0.26, undefined, this.appearance.height);
-      const error = landing ? Math.abs(landing.u - jump.target.u) * (surface.b.x - surface.a.x) : Infinity;
+      const landing = this.climbFlight?.kind === 'grab'
+        ? firstCollision({ position: this.body.position, velocity }, this.store!.snapshots(), Infinity, this.gravityPixels, this.appearance.height * 0.26, this.appearance.height, this.physics.maxFallSpeed, undefined, undefined, surface.id)
+        : firstLanding(this.body.position, velocity, this.store!.snapshots(), this.gravityPixels, this.appearance.height * 0.26, undefined, this.appearance.height, undefined, this.physics.maxFallSpeed);
+      const error = landing ? Math.abs(landing.u - jump.target.u) * Math.hypot(surface.b.x - surface.a.x, surface.b.y - surface.a.y) : Infinity;
       if (landing?.surfaceId !== surface.id || error > this.appearance.height * 0.4) {
         this.finishAction('interrupted', 'path-changed'); this.finishMove('interrupted', 'path-changed'); this.stopThen(() => this.setAction('idle')); return;
       }
     }
     if (jump.long && !jump.target) {
-      const time = this.jumpSpeed(true) * 2 / this.physics.gravity;
+      const time = this.jumpSpeed(true) * 2 / this.gravityPixels;
       const point = { x: this.body.position.x + velocity.x * time, y: this.body.position.y };
       const transform = this.motionFrame && readFrame(this.motionFrame);
       if (transform) this.explorationTarget = fromClient(point, transform);
@@ -485,6 +535,9 @@ export class StickFigureController implements StickFigure {
 
   private dropSupport(): void {
     this.ignoredId = this.support!.surfaceId;
+    this.ignoredRevision = this.support!.sourceRevision;
+    const surface = this.store!.get(this.ignoredId)!;
+    this.ignoredFill = surface.kind === 'fill' ? this.store!.element(surface.id) : null;
     this.ignoredTime = 0;
     this.releaseSupport();
     this.body!.velocity.y = 0;
@@ -523,9 +576,15 @@ export class StickFigureController implements StickFigure {
       position: this.body ? { ...this.body.position } : null,
       velocity: this.body ? { ...this.body.velocity } : { x: 0, y: 0 },
       support: this.support ? { ...this.support } : null,
+      climb: this.climb ? { ...this.climb, normal: { ...this.climb.normal } } : null,
+      navigation: {
+        ...this.navigation,
+        distance: this.body && targetSurface && selectedTarget ? Math.hypot(this.pointOn(targetSurface, selectedTarget.u).x - this.body.position.x, this.pointOn(targetSurface, selectedTarget.u).y - this.body.position.y) : null,
+        history: this.options.debug ? this.decisionHistory.map((entry) => ({ ...entry, target: entry.target ? { ...entry.target } : null })) : [],
+      },
       target: selectedTarget && targetSurface ? { surfaceId: selectedTarget.surfaceId, u: selectedTarget.u, position: this.pointOn(targetSurface, selectedTarget.u) } : this.explorationTarget && explorationFrame ? { position: toClient(this.explorationTarget, explorationFrame) } : null,
       path,
-      surfaces: surfaces.map((surface) => ({ ...surface, a: { ...surface.a }, b: { ...surface.b }, available: surface.available.map((range) => ({ ...range })), ...(surface.bounds ? { bounds: { ...surface.bounds } } : {}) })),
+      surfaces: surfaces.map((surface) => ({ ...surface, ...(surface.normal ? { normal: { ...surface.normal } } : {}), a: { ...surface.a }, b: { ...surface.b }, available: surface.available.map((range) => ({ ...range })), ...(surface.bounds ? { bounds: { ...surface.bounds } } : {}) })),
       diagnostics: { ...this.metrics },
     };
   }
@@ -538,7 +597,7 @@ export class StickFigureController implements StickFigure {
       this.cleanup.push(() => target.removeEventListener(type, listener, capture));
     };
     const dirty = () => { this.store?.invalidate(); this.schedule(); };
-    const viewChanged = () => { this.viewChanged = true; dirty(); };
+    const viewChanged = () => { this.viewChanged = true; this.store?.invalidateGeometry(); this.schedule(); };
     listen(doc, 'scroll', viewChanged, true);
     listen(win, 'resize', viewChanged);
     if (win.visualViewport) {
@@ -562,7 +621,12 @@ export class StickFigureController implements StickFigure {
     const media = win.matchMedia('(prefers-reduced-motion: reduce)');
     const updateMotion = () => {
       this.reduced = this.options.motionPreference !== 'full' && media.matches;
-      if (this.reduced && this.support) { this.finishAction('interrupted', 'reduced-motion'); this.finishMove('interrupted', 'reduced-motion'); this.body!.velocity.x = 0; this.setAction('idle'); }
+      if (this.reduced) {
+        this.finishAction('interrupted', 'reduced-motion');
+        this.finishMove('interrupted', 'reduced-motion');
+        if (this.support || this.climb) this.body!.velocity = { x: 0, y: 0 };
+        if (this.support) this.setAction('idle');
+      }
       dirty();
     };
     updateMotion();
@@ -605,8 +669,14 @@ export class StickFigureController implements StickFigure {
     this.pauses.delete('top-layer');
     this.store.pinned.clear();
     if (this.support) this.store.pinned.add(this.support.surfaceId);
+    if (this.climb) this.store.pinned.add(this.climb.surfaceId);
     if (this.targetId) this.store.pinned.add(this.targetId);
     if (this.goal) this.store.pinned.add(this.goal.surfaceId);
+    if (this.ignoredId) {
+      this.store.pinned.add(this.ignoredId);
+      const source = this.store.refresh(this.ignoredId, viewport);
+      if (!source || source.status === 'invalid' || source.sourceRevision !== this.ignoredRevision) this.clearIgnored();
+    }
     if (this.support) {
       const surface = this.store.refresh(this.support.surfaceId, viewport);
       if (!surface || surface.status === 'invalid' || surface.sourceRevision !== this.support.sourceRevision || (surface.status === 'offscreen' && this.store.clippedByAncestor(surface.id) && !passiveChange && !this.pauses.has('offscreen'))) {
@@ -617,6 +687,7 @@ export class StickFigureController implements StickFigure {
         this.setAction('fall');
         if (this.reduced) this.body = null;
       } else if (surface.status === 'unknown') {
+        this.syncPendingContactPosition();
         if (++this.unknownFrames >= 2) { this.pauses.add('verification'); this.sleep(); return; }
       } else {
         this.unknownFrames = 0;
@@ -628,7 +699,30 @@ export class StickFigureController implements StickFigure {
         if (!this.fits(surface, this.support.u)) { this.releaseSupport(); this.setAction('fall'); }
       }
     }
-    if (this.body && !this.support && this.motionFrame && this.localPosition) {
+    if (this.climb) {
+      const surface = this.store.refresh(this.climb.surfaceId, viewport);
+      if (!surface || surface.status === 'invalid' || surface.sourceRevision !== this.climb.sourceRevision) {
+        this.finishAction('interrupted', 'support-invalid');
+        this.finishMove('interrupted', 'support-invalid');
+        this.releaseClimb();
+        this.setAction('fall');
+        this.pauses.delete('offscreen');
+        this.pauses.delete('verification');
+      } else if (surface.status === 'unknown') {
+        this.syncPendingContactPosition();
+        if (++this.unknownFrames >= 2) { this.pauses.add('verification'); this.sleep(); return; }
+      } else {
+        this.unknownFrames = 0;
+        this.pauses.delete('verification');
+        this.climb.normal = { ...surface.normal! };
+        this.body!.position = climbRoot(surface, this.climb.u, this.appearance.height);
+        this.saveLocalPosition();
+        if (surface.status === 'offscreen') { this.pauses.add('offscreen'); this.sleep(); return; }
+        this.pauses.delete('offscreen');
+        if (!this.fits(surface, this.climb.u)) { this.releaseClimb(); this.setAction('fall'); }
+      }
+    }
+    if (this.body && !this.support && !this.climb && this.motionFrame && this.localPosition) {
       let transform = readFrame(this.motionFrame);
       if (!transform) {
         this.motionFrame = { kind: 'document', document: this.doc };
@@ -667,17 +761,36 @@ export class StickFigureController implements StickFigure {
     this.pauses.delete('verification');
     if (this.goal) {
       const goal = this.store.refresh(this.goal.surfaceId, viewport);
-      if (!goal || goal.status !== 'valid' || goal.sourceRevision !== this.goal.sourceRevision || !this.fits(goal, this.goal.u)) this.finishMove('interrupted', 'target-invalid');
+      if (goal?.status === 'unknown' && goal.sourceRevision === this.goal.sourceRevision) {
+        if (this.support || this.climb) { this.pauses.add('verification'); this.sleep(); return; }
+      } else if (!goal || goal.status !== 'valid' || goal.sourceRevision !== this.goal.sourceRevision || !this.fits(goal, this.goal.u)) this.finishMove('interrupted', 'target-invalid');
     }
     if (this.targetId) {
       const target = this.store.refresh(this.targetId, viewport);
-      if (!target || target.status !== 'valid' || target.sourceRevision !== this.targetRevision) {
+      if (target?.status === 'unknown' && target.sourceRevision === this.targetRevision) {
+        if (this.support || this.climb) { this.pauses.add('verification'); this.sleep(); return; }
+      } else if (!target || target.status !== 'valid' || target.sourceRevision !== this.targetRevision) {
         this.finishAction('interrupted', 'target-invalid');
         if (this.goal) this.finishMove('interrupted', 'target-invalid');
         if (this.support) this.readyThen(() => this.setAction('idle'));
       }
     }
-    const surfaces = this.store.snapshots().filter((surface) => surface.id !== this.ignoredId);
+    // 下穿填充实体时，其内部文字不是独立的下一层地面。
+    const ignoredBounds = this.ignoredId ? this.store.get(this.ignoredId)?.bounds : undefined;
+    let surfaces = this.store.snapshots().filter((surface) => {
+      if (surface.id === this.ignoredId) return false;
+      if (!this.ignoredFill || !ignoredBounds || surface.a.y < ignoredBounds.top || surface.a.y > ignoredBounds.bottom) return true;
+      const owner = this.store!.element(surface.id);
+      return !owner || !this.ignoredFill.contains(owner);
+    });
+    if (!this.support && !this.climb) {
+      const contactStart = performance.now();
+      surfaces = this.collisionSurfaces(surfaces, viewport);
+      this.metrics.scanMs += performance.now() - contactStart;
+    }
+    this.tickAutonomy(viewport);
+    if (this.goal && !this.planning && !this.route.length && this.simulationTime >= this.retryAt) this.replanMove();
+    this.advanceNavigation();
     let sampledFrame = this.motionFrame;
     let sampledTransform: FrameTransform | null = sampledFrame ? readFrame(sampledFrame) : null;
     const alpha = this.clock.advance(timestamp, (dt) => {
@@ -689,32 +802,63 @@ export class StickFigureController implements StickFigure {
         position: sampledTransform ? fromClient(this.body!.position, sampledTransform) : { ...this.body!.position },
         velocity: { ...this.body!.velocity },
         support: this.support ? { ...this.support } : null,
+        climb: this.climb ? { ...this.climb, normal: { ...this.climb.normal } } : null,
         frame: sampledTransform ? sampledFrame : null,
         action: this.action,
         actionTime: this.actionTime,
         time: this.simulationTime,
         distance: this.gaitDistance,
+        climbDistance: this.climbDistance,
+        climbAttachTime: this.climbAttachTime,
       };
       this.simulationTime += dt;
       this.actionTime += dt;
       if (this.support) {
-        this.stepGround(dt, viewport, surfaces);
+        this.stepGround(dt, surfaces);
         return;
       }
-      const result = stepBody(this.body!, surfaces, dt, this.physics.gravity, Number.POSITIVE_INFINITY, this.appearance.height * 0.26, this.appearance.height);
+      if (this.climb) {
+        this.stepClimbing(dt);
+        return;
+      }
+      const beforeY = this.body!.position.y;
+      const result = stepFlight(this.body!, surfaces, dt, this.gravityPixels, this.physics.maxFallSpeed, this.appearance.height * 0.26, this.appearance.height, this.climbFlight?.kind === 'grab' ? this.climbFlight.surfaceId : undefined);
+      this.descentDistance = result.body.position.y < beforeY ? 0 : this.descentDistance + result.body.position.y - beforeY;
       this.body = result.body;
-      if (this.ignoredId && (this.ignoredTime += dt) > 0.5) this.ignoredId = null;
+      if (result.climb) {
+        this.anchorClimb(this.store!.get(result.climb.surfaceId)!, result.climb.u);
+        if (this.route[0]?.kind === 'grab') this.route.shift();
+        this.climbFlight = null;
+        this.targetId = null;
+        this.targetRevision = null;
+        if (this.route.length) this.beginRouteStep();
+        else this.replanMove();
+        if (result.remainingTime > 0) {
+          this.actionTime += result.remainingTime;
+          this.stepClimbing(result.remainingTime);
+        }
+        return;
+      }
+      if (this.ignoredId) {
+        this.ignoredTime += dt;
+        const source = this.store!.get(this.ignoredId);
+        const passed = source && (this.ignoredFill && source.bounds
+          ? this.body.position.y - this.appearance.height > source.bounds.bottom
+          : this.body.position.y > source.a.y + 1);
+        if (!source || passed || this.ignoredTime > 5) this.clearIgnored();
+      }
       if (result.landing) {
+        this.clearIgnored();
         const surface = this.store!.get(result.landing.surfaceId)!;
         const speed = result.body.velocity.x;
         const direction: 1 | -1 = Math.abs(speed) > 0.5 ? speed < 0 ? -1 : 1 : this.facing;
-        const high = result.landing.impactSpeed ** 2 / (2 * this.physics.gravity) > Math.max(this.physics.jumpHeight * 1.2, this.appearance.height * 4);
+        const high = this.descentDistance > Math.max(this.physics.jumpHeight * 1.2, this.appearance.height * 4);
         this.landStrength = Math.min(1, result.landing.impactSpeed / (this.jumpSpeed() * 1.5));
         this.rollDuration = ROLL_DURATION;
         this.anchorTo(surface, result.landing.u);
-        this.landingRoll = high && this.fitsRoll(surface, result.landing.u, direction);
-        if (this.resumeMotion || this.goal || this.landingRoll) this.body.velocity.x = speed;
-        if (this.landingRoll) {
+        const rolling = high && this.fitsRoll(surface, result.landing.u, direction);
+        if (this.resumeMotion || this.goal || rolling) this.body.velocity.x = speed;
+        if (rolling) {
           this.facing = direction;
           this.rollSpeed = Math.max(this.appearance.height * 2, Math.min(this.appearance.height * 3.2, Math.abs(speed)));
         }
@@ -725,7 +869,12 @@ export class StickFigureController implements StickFigure {
         }
         this.entering = false;
         this.explorationTarget = null;
-        this.setAction('land-soft');
+        this.climbFlight = null;
+        this.setAction(rolling ? 'roll' : 'land-soft');
+        if (result.remainingTime > 0) {
+          this.actionTime += result.remainingTime;
+          this.stepGround(result.remainingTime, surfaces);
+        }
       } else if (this.body.velocity.y >= 0 && this.action !== 'fall' && this.action !== 'run-jump' && this.action !== 'running-long-jump') this.setAction('fall');
       if (this.entering) {
         this.enteringTime += dt;
@@ -739,6 +888,8 @@ export class StickFigureController implements StickFigure {
     this.previousRender = timestamp;
     let renderPosition = this.body!.position;
     let renderDistance = this.gaitDistance;
+    let renderClimbDistance = this.climbDistance;
+    let renderClimbAttachTime = this.climbAttachTime;
     let renderTime = this.simulationTime;
     let renderActionTime = this.actionTime;
     let renderVelocity = this.body!.velocity;
@@ -746,8 +897,11 @@ export class StickFigureController implements StickFigure {
     if (previous) {
       if (this.support && previous.support && this.support.surfaceId === previous.support.surfaceId && this.support.sourceRevision === previous.support.sourceRevision) {
         const surface = this.store.get(this.support.surfaceId)!;
-        renderPosition = this.pointOn(surface, previous.support.u + (this.support.u - previous.support.u) * alpha);
-      } else if (!this.support && !previous.support && previous.frame && previous.frame === this.motionFrame) {
+        if (surface.status === 'valid') renderPosition = this.pointOn(surface, previous.support.u + (this.support.u - previous.support.u) * alpha);
+      } else if (this.climb && previous.climb && this.climb.surfaceId === previous.climb.surfaceId && this.climb.sourceRevision === previous.climb.sourceRevision) {
+        const surface = this.store.get(this.climb.surfaceId)!;
+        if (surface.status === 'valid') renderPosition = climbRoot(surface, previous.climb.u + (this.climb.u - previous.climb.u) * alpha, this.appearance.height);
+      } else if (!this.support && !this.climb && !previous.support && !previous.climb && previous.frame && previous.frame === this.motionFrame) {
         const transform = readFrame(previous.frame);
         if (transform) {
           const origin = toClient(previous.position, transform);
@@ -755,15 +909,37 @@ export class StickFigureController implements StickFigure {
         }
       }
       renderDistance = previous.distance + (this.gaitDistance - previous.distance) * alpha;
+      renderClimbDistance = previous.climbDistance + (this.climbDistance - previous.climbDistance) * alpha;
+      renderClimbAttachTime = previous.climbAttachTime + (this.climbAttachTime - previous.climbAttachTime) * alpha;
       renderTime = previous.time + (this.simulationTime - previous.time) * alpha;
       renderVelocity = { x: previous.velocity.x + (this.body!.velocity.x - previous.velocity.x) * alpha, y: previous.velocity.y + (this.body!.velocity.y - previous.velocity.y) * alpha };
       if (previous.action === this.action && previous.actionTime <= this.actionTime) renderActionTime = previous.actionTime + (this.actionTime - previous.actionTime) * alpha;
     }
-    samplePose(this.pose, { height: this.appearance.height, action: this.action, time: renderActionTime, clock: renderTime, dt, verticalVelocity: renderVelocity.y, landProgress: renderActionTime / LAND_DURATION, landStrength: this.landStrength, facing: this.facing, distance: renderDistance, horizontalSpeed: renderVelocity.x, turnProgress: this.action === 'turn' ? renderActionTime / TURN_DURATION : undefined, actionDuration: this.action === 'roll' ? this.rollDuration : this.poseDuration });
+    let reach: { normal: Point; distance: number; progress: number } | undefined;
+    if (!this.climb && this.climbFlight?.kind === 'grab') {
+      const surface = this.store.get(this.climbFlight.surfaceId);
+      if (surface?.status === 'valid' && surface.normal) {
+        const normal = surface.normal;
+        const distance = (renderPosition.x - surface.a.x) * normal.x + (renderPosition.y - surface.a.y) * normal.y;
+        if (renderVelocity.x * normal.x + renderVelocity.y * normal.y < 0) {
+          reach = { normal, distance, progress: Math.max(0, Math.min(1, 1 - Math.max(0, distance - this.appearance.height * 0.26) / (this.appearance.height * 2))) };
+        }
+      }
+    }
+    samplePose(this.pose, {
+      height: this.appearance.height, action: this.action, time: renderActionTime,
+      clock: renderTime, dt, verticalVelocity: renderVelocity.y,
+      landProgress: renderActionTime / LAND_DURATION, landStrength: this.landStrength,
+      facing: this.facing, distance: renderDistance, horizontalSpeed: renderVelocity.x,
+      turnProgress: this.action === 'turn' ? renderActionTime / TURN_DURATION : undefined,
+      actionDuration: this.action === 'roll' ? this.rollDuration : this.poseDuration,
+      climb: this.climb ? { normal: this.climb.normal, distance: renderClimbDistance, gripProgress: renderClimbAttachTime / CLIMB_GRAB_DURATION } : undefined,
+      reach,
+    });
     this.renderer.draw(renderPosition, this.pose);
     this.renderer.setVisible(!this.pauses.size);
     this.setStatus(this.pauses.size ? 'paused' : 'running');
-    this.finishStart(this.support ? 'ready' : 'empty');
+    this.finishStart(this.support || this.climb ? 'ready' : 'empty');
     this.metrics = {
       frameMs: performance.now() - started - this.metrics.scanMs,
       scanMs: this.metrics.scanMs,
@@ -776,7 +952,26 @@ export class StickFigureController implements StickFigure {
     else this.schedule();
   }
 
-  private stepGround(dt: number, viewport: Viewport, surfaces: readonly SurfaceSnapshot[]): void {
+  private collisionSurfaces(surfaces: SurfaceSnapshot[], viewport: Viewport): SurfaceSnapshot[] {
+    let batch = surfaces;
+    const verified = new Set<string>();
+    const target = this.climbFlight?.kind === 'grab' ? this.climbFlight.surfaceId : undefined;
+    const predict = () => stepFlight(this.body!, batch, 6 / 120, this.gravityPixels, this.physics.maxFallSpeed, this.appearance.height * 0.26, this.appearance.height, target);
+    for (let pass = 0; pass < 4; pass++) {
+      const ids = [...new Set(predict().contacts.map(contact => contact.surfaceId))].filter(id => !verified.has(id));
+      if (!ids.length) return batch;
+      for (const id of ids) {
+        this.store!.pinned.add(id);
+        const surface = this.store!.refresh(id, viewport);
+        verified.add(id);
+        batch = batch.map(old => old.id !== id ? old : surface ?? { ...old, status: 'invalid', available: [] });
+      }
+    }
+    const unknown = new Set(predict().contacts.filter(contact => !verified.has(contact.surfaceId)).map(contact => contact.surfaceId));
+    return batch.filter(surface => !unknown.has(surface.id));
+  }
+
+  private stepGround(dt: number, surfaces: readonly SurfaceSnapshot[]): void {
     const surface = this.store!.get(this.support!.surfaceId)!;
     if (surface.status !== 'valid') return;
     const h = this.appearance.height;
@@ -815,21 +1010,15 @@ export class StickFigureController implements StickFigure {
     if (this.action === 'land-soft') {
       const resume = this.resumeMotion;
       const moving = resume?.action ?? (this.goal ? this.pace : null);
-      const desired = this.landingRoll ? this.facing * Math.min(this.rollSpeed, h * 1.4) : moving ? this.facing * h * (moving === 'sprint' ? 4.6 : moving === 'run' ? 2.6 : 0.85) : 0;
+      const desired = moving ? this.facing * h * (moving === 'sprint' ? 4.6 : moving === 'run' ? 2.6 : 0.85) : 0;
       const result = advance(desired);
       if (result.blocked) {
-        this.landingRoll = false;
         this.finishAction('interrupted', 'obstructed'); this.finishMove('interrupted', 'obstructed');
         this.setAction('idle'); return;
       }
       if (result.edge) {
-        this.landingRoll = false;
         this.finishAction('completed', 'edge'); this.finishMove('interrupted', 'edge');
         this.setAction('idle'); return;
-      }
-      if (this.landingRoll && this.actionTime >= LAND_DURATION * 0.55) {
-        if (this.fitsRoll(surface, this.support!.u, this.facing)) { this.landingRoll = false; this.setAction('roll'); return; }
-        this.landingRoll = false;
       }
       if (this.actionTime >= LAND_DURATION) this.completeLanding();
       return;
@@ -845,7 +1034,7 @@ export class StickFigureController implements StickFigure {
       if (progress >= 1) this.completeLanding();
       return;
     }
-    if (this.action === 'wave' || this.action === 'crouch' || this.action === 'rest' || this.action === 'prone') {
+    if (this.action === 'wave' || this.action === 'crouch' || this.action === 'rest' || this.action === 'prone' || this.action === 'sit' || this.action === 'question' || this.action === 'run-in-place') {
       if (this.actionTime >= this.poseDuration) {
         this.standThen(() => { this.setAction('idle'); this.finishAction('completed'); this.decisionAt = this.simulationTime + 0.7; });
       }
@@ -905,32 +1094,6 @@ export class StickFigureController implements StickFigure {
         this.decisionAt = this.simulationTime + 0.7;
       }
     }
-    if (this.goal?.automatic && this.simulationTime >= this.goalChangeAt && !this.dash && (this.action === 'idle' || this.action === 'walk' || this.action === 'run' || this.action === 'sprint')) {
-      this.goalChangeAt = this.simulationTime + 6 + this.random() * 8;
-      if (this.random() < 0.25) this.chooseRandomGoal(viewport);
-    }
-    if (this.action === 'idle' && this.goal) {
-      if (!this.route.length) this.replanMove();
-      if (this.goal) this.beginRouteStep();
-    } else if (this.action === 'idle' && this.autonomous && !this.reduced && !this.pendingAction && !this.pendingMove && this.simulationTime >= this.decisionAt) {
-      this.decisionAt = this.simulationTime + 0.8;
-      if (this.gaitDistance - this.decisionDistance >= this.appearance.height) this.stagnantDecisions = 0;
-      else this.stagnantDecisions++;
-      this.decisionDistance = this.gaitDistance;
-      const choice = this.decisions++ > 0 ? this.random() : 1;
-      const pose = chooseAutonomousPose(choice, this.recentAutonomousPoses, this.stagnantDecisions, this.fitsProne(surface, this.support!.u, this.facing));
-      if (pose) {
-        this.recentAutonomousPoses.push(pose);
-        if (this.recentAutonomousPoses.length > 8) this.recentAutonomousPoses.shift();
-        this.poseDuration = POSE_DURATION[pose]; this.setAction(pose);
-      }
-      else if (!this.chooseRandomGoal(viewport)) {
-        const interval = surface.available.find((range) => this.support!.u >= range.start && this.support!.u <= range.end)!;
-        const direction: 1 | -1 = this.support!.u - interval.start > interval.end - this.support!.u ? -1 : 1;
-        this.resumeMotion = { action: 'run', duration: 1.5 };
-        this.beginDash(null, true, direction);
-      }
-    }
   }
 
 
@@ -938,10 +1101,9 @@ export class StickFigureController implements StickFigure {
     const resume = this.resumeMotion;
     this.finishAction('completed');
     if (this.goal) {
-      this.route = [];
-      this.replanMove();
-      if (this.goal) this.beginRouteStep();
-      else this.setAction('idle');
+      this.setAction('idle');
+      if (this.route.length) this.beginRouteStep();
+      else this.replanMove();
     } else if (resume) {
       this.walkDuration = resume.duration;
       this.setAction(resume.action);
@@ -958,15 +1120,51 @@ export class StickFigureController implements StickFigure {
 
   private navigationPhysics(pace = this.pace): NavigationPhysics {
     const h = this.appearance.height;
-    return { gravity: this.physics.gravity, upwardSpeed: this.jumpSpeed(), maxHorizontalSpeed: h * 4.6, longUpwardSpeed: this.jumpSpeed(true), longHorizontalSpeed: h * 8, acceleration: h * 18, anticipation: TRANSITION_DURATION.anticipate, walkSpeed: h * (pace === 'sprint' ? 4.6 : pace === 'run' ? 2.6 : 0.85), footRadius: h * 0.26, bodyHeight: h };
+    return { gravity: this.gravityPixels, maxFallSpeed: this.physics.maxFallSpeed, climbSpeed: h * CLIMB_SPEED_FACTOR, grabDuration: CLIMB_GRAB_DURATION, climbDestination: this.goal?.climbAction ? this.goal.surfaceId : undefined, upwardSpeed: this.jumpSpeed(), maxHorizontalSpeed: h * 4.6, longUpwardSpeed: this.jumpSpeed(true), longHorizontalSpeed: h * 8, acceleration: h * 18, anticipation: TRANSITION_DURATION.anticipate, walkSpeed: h * (pace === 'sprint' ? 4.6 : pace === 'run' ? 2.6 : 0.85), footRadius: h * 0.26, bodyHeight: h };
   }
 
   private beginRouteStep(): void {
-    if (!this.goal || !this.support || !this.body) return;
+    if (!this.goal || !(this.support || this.climb) || !this.body || this.planning || this.simulationTime < this.restUntil) return;
     const step = this.route[0];
-    if (!step) { this.setAction('idle'); this.finishMove('completed'); return; }
+    if (!step) {
+      if (this.exploring) {
+        this.exploring = false;
+        this.retryAt = this.simulationTime + 0.3;
+        this.setNavigation('planning', 'intermediate-reached');
+        this.replanMove();
+      } else {
+        const anchor = this.support ?? this.climb!;
+        const target = this.store!.get(this.goal.surfaceId);
+        if (anchor.surfaceId !== this.goal.surfaceId || !target || this.distanceTo(target, this.goal.u) > 0.8) this.replanMove();
+        else this.finishMove('completed');
+      }
+      if (!this.climb) this.setAction('idle');
+      return;
+    }
     const surface = this.store!.get(step.surfaceId);
-    if (!surface || surface.status !== 'valid' || surface.sourceRevision !== step.sourceRevision || !this.fits(surface, step.u)) { this.replanMove(); this.setAction('idle'); return; }
+    if (!surface || surface.status !== 'valid' || surface.sourceRevision !== step.sourceRevision || !this.fits(surface, step.u)) { this.replanMove(); if (!this.climb) this.setAction('idle'); return; }
+    if (step.kind === 'climb') {
+      if (!this.climb || this.climb.surfaceId !== surface.id) { this.replanMove(); return; }
+      this.setAction('climb');
+      return;
+    }
+    if (step.kind === 'climb-jump') {
+      if (!this.climb || !step.takeoff) { this.replanMove(); return; }
+      const velocity = planJump(this.body.position, this.pointOn(surface, step.u), this.appearance.height * (step.takeoff.long ? 8 : 4.6), this.jumpSpeed(step.takeoff.long), this.gravityPixels, this.physics.maxFallSpeed);
+      if (!velocity) { this.finishMove('interrupted', 'path-changed'); return; }
+      const landing = firstLanding(this.body.position, velocity, this.store!.snapshots(), this.gravityPixels, this.appearance.height * 0.26, undefined, this.appearance.height, undefined, this.physics.maxFallSpeed);
+      if (!landing || landing.surfaceId !== surface.id) { this.finishMove('interrupted', 'path-changed'); return; }
+      this.climbFlight = step;
+      this.targetId = surface.id;
+      this.targetRevision = surface.sourceRevision;
+      this.facing = velocity.x < 0 ? -1 : 1;
+      this.releaseClimb();
+      this.body.velocity = { ...velocity };
+      this.setAction('jump');
+      this.saveLocalPosition();
+      return;
+    }
+    if (!this.support) { this.replanMove(); return; }
     if (step.kind === 'walk') {
       if (step.surfaceId !== this.support.surfaceId) { this.replanMove(); return; }
       const dx = this.pointOn(surface, step.u).x - this.body.position.x;
@@ -983,81 +1181,211 @@ export class StickFigureController implements StickFigure {
       this.stopThen(() => { this.targetId = step.surfaceId; this.targetRevision = step.sourceRevision; this.dropSupport(); });
     } else {
       const source = this.store!.get(this.support.surfaceId)!;
-      const takeoff = planTakeoff(source, step.takeoff?.launchU ?? this.support.u, this.pointOn(surface, step.u), this.navigationPhysics(), step.takeoff?.long ?? false, this.store!.snapshots(), surface.id);
+      const takeoff = step.kind === 'grab' ? step.takeoff : planTakeoff(source, step.takeoff?.launchU ?? this.support.u, this.pointOn(surface, step.u), this.navigationPhysics(), step.takeoff?.long ?? false, this.store!.snapshots(), surface.id);
       if (!takeoff) { this.finishMove('interrupted', 'path-changed'); this.setAction('idle'); return; }
+      this.climbFlight = step.kind === 'grab' ? step : null;
       if (this.pace !== 'walk') this.resumeMotion = { action: this.pace, duration: 1.5 };
       const direction: 1 | -1 = takeoff.velocity.x < 0 ? -1 : 1;
       this.stopThen(() => this.beginDash(step, takeoff.long, direction, takeoff));
     }
   }
 
+  private stepClimbing(dt: number): void {
+    if (!this.climb || !this.body) return;
+    const surface = this.store!.get(this.climb.surfaceId)!;
+    if (surface.status !== 'valid') {
+      this.body.velocity = { x: 0, y: 0 };
+      return;
+    }
+    const step = this.route[0];
+    const length = Math.hypot(surface.b.x - surface.a.x, surface.b.y - surface.a.y);
+    const beforeTime = this.climbAttachTime;
+    this.climbAttachTime += dt;
+    const drivingTime = Math.min(dt, Math.max(0, this.climbAttachTime - CLIMB_GRAB_DURATION));
+    const active = step?.kind === 'climb' && step.surfaceId === surface.id && !this.planning && this.simulationTime >= this.restUntil && this.climbAttachTime >= CLIMB_GRAB_DURATION;
+    if (active && beforeTime < CLIMB_GRAB_DURATION) this.setNavigation('moving', 'climb-started');
+    const distance = active ? (step.u - this.climb.u) * length : 0;
+    const acceleration = this.appearance.height * 1.4;
+    const desired = Math.sign(distance) * Math.min(this.appearance.height * CLIMB_SPEED_FACTOR, Math.sqrt(2 * acceleration * Math.max(0, Math.abs(distance) - 0.05)));
+    const beforeU = this.climb.u;
+    const result = stepClimb(this.body, surface, beforeU, desired, acceleration, drivingTime, this.appearance.height);
+    this.body = result.body;
+    this.climb.u = result.u;
+    this.climbDistance += (beforeU - result.u) * length;
+    if (active && Math.abs((step.u - result.u) * length) < 0.5 && Math.hypot(result.body.velocity.x, result.body.velocity.y) < 1.5) {
+      this.body.velocity = { x: 0, y: 0 };
+      this.route.shift();
+      this.beginRouteStep();
+    } else if (active && result.edge) this.finishMove('interrupted', 'edge');
+  }
+
   private replanMove(): void {
-    if (!this.goal || !this.support) return;
-    this.pendingJump = null; this.afterTransition = null;
-    this.dash = null; this.resumeMotion = null;
-    this.targetId = null; this.targetRevision = null;
-    const route = findRoute(this.store!.snapshots(), this.support, this.goal, this.navigationPhysics());
-    if (!route) { this.finishMove('interrupted', 'unreachable'); return; }
-    this.route = route;
+    const anchor = this.support ?? this.climb;
+    if (!this.goal || !anchor || this.planning || this.store!.get(this.goal.surfaceId)?.status !== 'valid') return;
+    this.pendingJump = null;
+    this.afterTransition = null;
+    this.dash = null;
+    this.targetId = null;
+    this.targetRevision = null;
+    this.route = [];
+    this.planningAnchor = { surfaceId: anchor.surfaceId, sourceRevision: anchor.sourceRevision, u: anchor.u };
+    this.planning = createPlanningJob(this.store!.snapshots(), this.planningAnchor, this.goal, this.navigationPhysics());
+    this.navigation.replans++;
+    this.setNavigation('planning', this.retries ? 'retry' : 'target-selected');
+  }
+
+  private advanceNavigation(): void {
+    if (!this.planning) return;
+    const anchor = this.support ?? this.climb;
+    if (!this.goal || !anchor || anchor.surfaceId !== this.planningAnchor?.surfaceId || anchor.sourceRevision !== this.planningAnchor.sourceRevision || this.planning.target?.surfaceId !== this.goal.surfaceId || this.planning.target.u !== this.goal.u) {
+      this.planning = null;
+      return;
+    }
+    const job = this.planning;
+    const result = job.advance(this.navigationBudget, 32);
+    this.navigation.planningMs = result.elapsedMs;
+    this.navigation.candidates = result.candidates;
+    this.navigation.expanded = result.expanded;
+    this.navigation.checkedEdges = result.checkedEdges;
+    if (result.status === 'pending') return;
+    this.planning = null;
+    if (result.status === 'unreachable' && result.route && this.goal.automatic) {
+      this.exploring = true;
+      this.setNavigation('planning', 'closer-intermediate');
+    } else if (result.status === 'unreachable' || !result.route) {
+      if (this.goal.automatic) {
+        this.retries++;
+        this.retryAt = this.simulationTime + 0.6;
+        this.setNavigation('unreachable', 'no-route');
+      } else this.finishMove('rejected', 'unreachable');
+      return;
+    }
+    const batch = new Map(job.surfaces.map(surface => [surface.id, surface]));
+    const before = batch.get(anchor.surfaceId)!;
+    const current = this.store!.get(anchor.surfaceId)!;
+    const dx = current.a.x - before.a.x, dy = current.a.y - before.a.y;
+    if (result.route?.some((step) => {
+      const surface = this.store!.get(step.surfaceId);
+      const old = batch.get(step.surfaceId);
+      if (!surface || !old || surface.status !== 'valid' || surface.sourceRevision !== step.sourceRevision || !this.fits(surface, step.u)) return true;
+      const translated = Math.abs(surface.a.x - old.a.x - dx) < 0.01 && Math.abs(surface.a.y - old.a.y - dy) < 0.01
+        && Math.abs(surface.b.x - old.b.x - dx) < 0.01 && Math.abs(surface.b.y - old.b.y - dy) < 0.01;
+      const ranges = surface.available.length === old.available.length && surface.available.every((range, i) => Math.abs(range.start - old.available[i]!.start) < 1e-6 && Math.abs(range.end - old.available[i]!.end) < 1e-6);
+      const normals = Math.abs((surface.normal?.x ?? 0) - (old.normal?.x ?? 0)) < 1e-6 && Math.abs((surface.normal?.y ?? 0) - (old.normal?.y ?? 0)) < 1e-6;
+      const boundsMatch = surface.bounds && old.bounds
+        ? Math.abs(surface.bounds.left - old.bounds.left - dx) < 0.01 && Math.abs(surface.bounds.right - old.bounds.right - dx) < 0.01
+          && Math.abs(surface.bounds.top - old.bounds.top - dy) < 0.01 && Math.abs(surface.bounds.bottom - old.bounds.bottom - dy) < 0.01
+        : !surface.bounds && !old.bounds;
+      return !translated || !ranges || !normals || !boundsMatch;
+    })) {
+      this.retries++;
+      this.retryAt = this.simulationTime + 0.3;
+      this.setNavigation('planning', 'scene-changed');
+      return;
+    }
+    this.route = result.route!;
+    this.retries = 0;
+    if (this.simulationTime < this.restUntil) this.setNavigation('resting', 'short-rest');
+    else {
+      this.setNavigation('moving', 'route-ready');
+      if (this.climb) this.beginRouteStep();
+      else if (!['roll', 'land-soft', 'anticipate', 'stand-up'].includes(this.action)) this.readyThen(() => this.beginRouteStep());
+    }
+  }
+
+  private setNavigation(status: NavigationDecision['status'], reason: string): void {
+    this.navigation.status = status;
+    this.navigation.reason = reason;
+    const surface = this.goal ? this.store?.get(this.goal.surfaceId) : null;
+    const decision: NavigationDecision = {
+      id: this.navigation.goalId, time: this.simulationTime, status, reason,
+      target: surface && this.goal ? this.pointOn(surface, this.goal.u) : null,
+    };
+    if (this.options.debug) {
+      this.decisionHistory.push({ ...decision, target: decision.target ? { ...decision.target } : null });
+      if (this.decisionHistory.length > 32) this.decisionHistory.shift();
+    }
+    this.emit('navigationchange', decision);
+  }
+
+  private tickAutonomy(viewport: Viewport): void {
+    if (this.reduced || this.pendingAction || this.pendingMove) return;
+    if (!this.goal && this.autonomous && this.simulationTime >= this.decisionAt) this.chooseRandomGoal(viewport);
+    if (!this.goal?.automatic) return;
+    if (this.simulationTime >= this.goalChangeAt) {
+      this.goalChangeAt = this.simulationTime + 3 + this.random() * 3;
+      if (this.random() < 0.05) this.chooseRandomGoal(viewport);
+    }
+    if (this.retries >= 3 && this.simulationTime >= this.retryAt) this.chooseRandomGoal(viewport);
+    if (!this.planning && !this.route.length && this.simulationTime >= this.retryAt) this.replanMove();
+    if (this.route.length && this.navigation.status === 'resting' && this.simulationTime >= this.restUntil && (this.action === 'idle' || this.climb)) {
+      this.setNavigation('moving', 'rest-finished');
+      this.beginRouteStep();
+    }
   }
 
   private chooseRandomGoal(viewport: Viewport): boolean {
-    if (!this.support || !this.body || this.pendingMove || this.pendingAction) return false;
-    const origin = this.body.position;
+    if (!this.body || this.reduced || this.pendingMove || this.pendingAction) return false;
     const h = this.appearance.height;
-    const surfaces = this.store!.snapshots();
-    const routes = reachableRoutes(surfaces, this.support, this.navigationPhysics()).flatMap((candidate) => {
-      const surface = this.store!.get(candidate.target.surfaceId);
-      if (!surface || surface.a.y - h < viewport.top || surface.id === this.support!.surfaceId || surface.id === this.goal?.surfaceId) return [];
-      const point = this.pointOn(surface, candidate.target.u);
+    const origin = this.body.position;
+    const candidates: { surface: SurfaceSnapshot; u: number; weight: number }[] = [];
+    for (const surface of this.store!.snapshots()) {
+      if (surface.status !== 'valid') continue;
+      const preferred = this.random();
+      let u = surface.mode === 'climb' ? this.climbingU(surface, preferred) : this.standingU(surface, preferred);
+      if (u === null) continue;
+      let point = this.pointOn(surface, u);
+      if (Math.hypot(point.x - origin.x, point.y - origin.y) < h) {
+        const ends = [0, 1].flatMap(preferred => {
+          const candidate = surface.mode === 'climb' ? this.climbingU(surface, preferred) : this.standingU(surface, preferred);
+          if (candidate === null) return [];
+          const point = this.pointOn(surface, candidate);
+          if (Math.hypot(point.x - origin.x, point.y - origin.y) < h || point.x < viewport.left || point.x > viewport.right || point.y - h < viewport.top || point.y > viewport.bottom) return [];
+          return [{ u: candidate, point }];
+        });
+        if (!ends.length) continue;
+        const end = ends[Math.floor(this.random() * ends.length)]!;
+        u = end.u;
+        point = end.point;
+      }
       const distance = Math.hypot(point.x - origin.x, point.y - origin.y);
+      if (distance < h || point.x < viewport.left || point.x > viewport.right || point.y - h < viewport.top || point.y > viewport.bottom) continue;
       const visits = this.visits.get(surface.id) ?? 0;
-      const recentSurfacePenalty = recentPenalty(this.recentSurfaces, surface.id);
-      const weight = Math.min(6, Math.max(1, distance / (h * 3))) / ((1 + visits * 1.8) * recentSurfacePenalty * (1 + candidate.cost * 0.04));
-      return [{ ...candidate, surface, weight }];
-    });
-    if (routes.length) {
-      let selection = this.random() * routes.reduce((sum, candidate) => sum + candidate.weight, 0);
-      let picked = routes.at(-1)!;
-      for (const candidate of routes) { selection -= candidate.weight; if (selection <= 0) { picked = candidate; break; } }
-      this.goal = { ...picked.target, sourceRevision: picked.surface.sourceRevision, automatic: true };
-      this.route = picked.route;
-      this.pace = this.random() < 0.35 ? 'run' : 'walk';
-      this.localGoals = 0;
-      this.goalChangeAt = this.simulationTime + 8 + this.random() * 10;
-      this.emit('targetchange', { target: this.pointOn(picked.surface, picked.target.u) });
-      this.stopThen(() => this.beginRouteStep());
-      return true;
+      const weight = Math.min(6, Math.max(1, distance / (h * 3))) / ((1 + visits * 1.8) * recentPenalty(this.recentSurfaces, surface.id));
+      candidates.push({ surface, u, weight });
     }
-    if (this.localGoals >= 2) { this.localGoals = 0; return false; }
-    const current = this.store!.get(this.support.surfaceId)!;
-    const interval = current.available.find((range) => this.support!.u >= range.start && this.support!.u <= range.end)!;
-    const margin = h * 0.26 / (current.b.x - current.a.x);
-    const direction = this.support.u - interval.start < interval.end - this.support.u ? 1 : -1;
-    const u = direction === 1
-      ? interval.start + margin + (interval.end - interval.start - margin * 2) * (0.7 + this.random() * 0.25)
-      : interval.start + margin + (interval.end - interval.start - margin * 2) * (0.05 + this.random() * 0.25);
-    if (Math.abs(u - this.support.u) * (current.b.x - current.a.x) < h) return false;
-    const goal = { surfaceId: current.id, sourceRevision: current.sourceRevision, u, automatic: true };
-    const route = findRoute(surfaces, this.support, goal, this.navigationPhysics());
-    if (!route) return false;
-    this.localGoals++;
-    this.goal = goal; this.route = route; this.pace = 'walk';
-    this.goalChangeAt = this.simulationTime + 10;
-    this.emit('targetchange', { target: this.pointOn(current, u) });
-    this.stopThen(() => this.beginRouteStep());
+    if (!candidates.length) {
+      this.decisionAt = this.simulationTime + 0.8;
+      if (!this.goal) this.setNavigation('waiting', 'no-visible-target');
+      return false;
+    }
+    let selection = this.random() * candidates.reduce((sum, candidate) => sum + candidate.weight, 0);
+    let picked = candidates.at(-1)!;
+    for (const candidate of candidates) { selection -= candidate.weight; if (selection <= 0) { picked = candidate; break; } }
+    this.goal = { surfaceId: picked.surface.id, sourceRevision: picked.surface.sourceRevision, u: picked.u, automatic: true };
+    this.navigation.goalId = ++this.nextGoalId;
+    this.route = [];
+    this.planning = null;
+    this.retries = 0;
+    this.retryAt = this.simulationTime;
+    this.exploring = false;
+    this.pace = this.random() < 0.45 ? 'run' : 'walk';
+    this.goalChangeAt = this.simulationTime + 3 + this.random() * 3;
+    this.emit('targetchange', { target: this.pointOn(picked.surface, picked.u) });
+    this.replanMove();
+    if (this.support && !this.climbFlight && (this.action === 'idle' || this.action === 'walk' || this.action === 'run' || this.action === 'sprint')) this.stopThen(() => this.setAction('idle'));
     return true;
   }
 
   private resolveMoveTarget(target: MoveTarget): { surface: SurfaceSnapshot; u: number } | null {
     if (!target || typeof target !== 'object') return null;
-    if (!('position' in target)) return this.resolveTarget(target);
+    if (!('position' in target)) return this.resolveTarget(target) ?? this.resolveClimbTarget(target);
     if (!Number.isFinite(target.position.x) || !Number.isFinite(target.position.y) || (target.coordinateSpace && target.coordinateSpace !== 'viewport' && target.coordinateSpace !== 'document')) return null;
     const point = target.coordinateSpace === 'document' ? toClient(target.position, readFrame({ kind: 'document', document: this.doc! })!) : target.position;
     let best: { surface: SurfaceSnapshot; u: number } | null = null;
     let distance = this.appearance.height * 4;
     for (const surface of this.store!.snapshots()) {
-      if (surface.status !== 'valid') continue;
+      if (surface.status !== 'valid' || surface.mode === 'climb') continue;
       const width = surface.b.x - surface.a.x;
       for (const interval of surface.available) {
         const margin = this.appearance.height * 0.26 / width;
@@ -1072,7 +1400,7 @@ export class StickFigureController implements StickFigure {
   }
 
   private handleBoundary(viewport: Viewport): void {
-    if (!this.body || this.support || this.entering) return;
+    if (!this.body || this.support || this.climb || this.entering) return;
     const p = this.body.position;
     const h = this.appearance.height;
     let axis: 'x' | 'y' | null = null;
@@ -1084,13 +1412,14 @@ export class StickFigureController implements StickFigure {
       if (this.options.boundary?.wrapY === false) { this.pauses.add('boundary-wait'); return; }
       p.y = viewport.top - h / 3;
       this.body.velocity.y = 0;
+      this.descentDistance = 0;
       axis = 'y';
     }
     if (axis) {
       this.previousPhysics = null;
       this.entering = true;
       this.enteringTime = 0;
-      this.ignoredId = null;
+      this.clearIgnored();
       this.finishAction('interrupted', 'boundary');
       this.finishMove('interrupted', 'boundary');
       this.setAction('fall');
@@ -1110,7 +1439,7 @@ export class StickFigureController implements StickFigure {
       surface = this.store.refresh(target.surfaceId, readViewport(this.doc));
       u = target.u ?? (surface ? this.standingU(surface) : null);
     }
-    if (!surface || surface.status !== 'valid' || u === null || !Number.isFinite(u) || !this.fits(surface, u)) return null;
+    if (!surface || surface.mode === 'climb' || surface.status !== 'valid' || u === null || !Number.isFinite(u) || !this.fits(surface, u)) return null;
     const point = this.pointOn(surface, u);
     if (point.y - this.appearance.height < readViewport(this.doc).top) return null;
     return { surface, u };
@@ -1118,7 +1447,7 @@ export class StickFigureController implements StickFigure {
 
   private standingU(surface: SurfaceSnapshot, preferred = 0.5): number | null {
     const width = surface.b.x - surface.a.x;
-    if (surface.status !== 'valid' || width <= 0) return null;
+    if (surface.mode === 'climb' || surface.status !== 'valid' || Math.abs(surface.a.y - surface.b.y) > 1e-6 || width <= 0) return null;
     const margin = this.appearance.height * 0.26 / width;
     let best: number | null = null;
     for (const range of surface.available) {
@@ -1127,6 +1456,70 @@ export class StickFigureController implements StickFigure {
       if (best === null || Math.abs(u - preferred) < Math.abs(best - preferred)) best = u;
     }
     return best;
+  }
+
+  private climbingU(surface: SurfaceSnapshot, preferred = 0.5): number | null {
+    if (surface.mode !== 'climb' || surface.status !== 'valid') return null;
+    const length = Math.hypot(surface.b.x - surface.a.x, surface.b.y - surface.a.y);
+    if (length < this.appearance.height * 2) return null;
+    let best: number | null = null;
+    for (const range of surface.available) {
+      const mid = (range.start + range.end) / 2;
+      const safe = climbInterval(surface, mid, this.appearance.height);
+      if (!safe) continue;
+      const u = Math.max(safe.start, Math.min(safe.end, preferred));
+      if (best === null || Math.abs(u - preferred) < Math.abs(best - preferred)) best = u;
+    }
+    return best;
+  }
+
+  private resolveClimbTarget(target: MoveTarget): { surface: SurfaceSnapshot; u: number } | null {
+    if (!this.doc || !this.store || !this.root || !target || typeof target !== 'object') return null;
+    if ('nodeType' in target) {
+      if (target.ownerDocument !== this.doc || !this.root.contains(target)) return null;
+      const candidates = this.store.measureClimbs(target, readViewport(this.doc)).flatMap((surface) => {
+        const u = this.climbingU(surface, 0.18);
+        return u === null ? [] : [{ surface, u }];
+      });
+      candidates.sort((a, b) => this.distanceTo(a.surface, a.u) - this.distanceTo(b.surface, b.u));
+      return candidates[0] ?? null;
+    }
+    if ('surfaceId' in target) {
+      const surface = this.store.refresh(target.surfaceId, readViewport(this.doc));
+      if (!surface || surface.mode !== 'climb' || surface.status !== 'valid') return null;
+      const u = target.u ?? this.climbingU(surface, 0.18);
+      return u !== null && Number.isFinite(u) && this.fits(surface, u) ? { surface, u } : null;
+    }
+    return null;
+  }
+
+  private distanceTo(surface: SurfaceSnapshot, u: number): number {
+    const point = this.pointOn(surface, u);
+    return this.body ? Math.hypot(point.x - this.body.position.x, point.y - this.body.position.y) : Infinity;
+  }
+
+  private nearestClimb(): { surface: SurfaceSnapshot; u: number } | null {
+    let best: { surface: SurfaceSnapshot; u: number } | null = null;
+    let distance = this.appearance.height * 8;
+    for (const surface of this.store!.snapshots()) {
+      const u = this.climbingU(surface, 0.18);
+      if (u === null) continue;
+      const dx = surface.b.x - surface.a.x, dy = surface.b.y - surface.a.y;
+      const origin = this.body!.position;
+      const preferred = ((origin.x - surface.a.x - surface.normal!.x * this.appearance.height * 0.26) * dx + (origin.y - surface.a.y - surface.normal!.y * this.appearance.height * 0.26) * dy) / (dx * dx + dy * dy);
+      const closest = this.climbingU(surface, preferred)!;
+      const d = this.distanceTo(surface, closest);
+      if (d < distance) { distance = d; best = { surface, u }; }
+    }
+    return best;
+  }
+
+  private fitsSit(surface: SurfaceSnapshot, u: number, facing: 1 | -1): boolean {
+    const x = this.pointOn(surface, u).x;
+    const width = surface.b.x - surface.a.x;
+    const left = x - this.appearance.height * (facing === 1 ? 0.42 : 0.65);
+    const right = x + this.appearance.height * (facing === 1 ? 0.65 : 0.42);
+    return surface.available.some((range) => left >= surface.a.x + range.start * width && right <= surface.a.x + range.end * width);
   }
 
   private fitsRoll(surface: SurfaceSnapshot, u: number, direction: 1 | -1, duration = ROLL_DURATION): boolean {
@@ -1148,12 +1541,15 @@ export class StickFigureController implements StickFigure {
   }
 
   private fits(surface: SurfaceSnapshot, u: number): boolean {
+    if (surface.mode === 'climb') return Boolean(climbInterval(surface, u, this.appearance.height));
+    if (Math.abs(surface.a.y - surface.b.y) > 1e-6) return false;
     const length = surface.b.x - surface.a.x;
     const margin = this.appearance.height * 0.26 / length;
     return length > 0 && surface.available.some((interval) => u - margin >= interval.start - 1e-8 && u + margin <= interval.end + 1e-8);
   }
 
   private pointOn(surface: SurfaceSnapshot, u: number): Point {
+    if (surface.mode === 'climb') return climbRoot(surface, u, this.appearance.height);
     return { x: surface.a.x + (surface.b.x - surface.a.x) * u, y: surface.a.y + (surface.b.y - surface.a.y) * u };
   }
 
@@ -1165,13 +1561,41 @@ export class StickFigureController implements StickFigure {
     }
     this.visits.set(surface.id, (this.visits.get(surface.id) ?? 0) + 1);
     if (this.visits.size > 64) this.visits.delete(this.visits.keys().next().value!);
+    this.climb = null;
     this.support = { surfaceId: surface.id, sourceRevision: surface.sourceRevision, u };
     this.body = { position: this.pointOn(surface, u), velocity: { x: 0, y: 0 } };
-    this.decisionAt = this.simulationTime + 0.8;
+    this.decisionAt = this.simulationTime;
     const element = this.store!.element(surface.id)!;
     this.motionFrame = selectFrame(element);
     this.saveLocalPosition();
     this.emit('surfacechange', { support: { ...this.support } });
+  }
+
+  private anchorClimb(surface: SurfaceSnapshot, u: number): void {
+    this.previousPhysics = null;
+    if (this.support) this.emit('surfacechange', { support: null });
+    this.support = null;
+    this.climb = { surfaceId: surface.id, sourceRevision: surface.sourceRevision, u, normal: { ...surface.normal! } };
+    this.body = { position: climbRoot(surface, u, this.appearance.height), velocity: { x: 0, y: 0 } };
+    this.facing = surface.normal!.x < 0 ? 1 : -1;
+    this.pose.facingScale = this.facing;
+    this.motionFrame = selectFrame(this.store!.element(surface.id)!);
+    this.visits.set(surface.id, (this.visits.get(surface.id) ?? 0) + 1);
+    if (this.visits.size > 64) this.visits.delete(this.visits.keys().next().value!);
+    this.descentDistance = 0;
+    this.climbDistance = 0;
+    this.climbAttachTime = 0;
+    this.setAction('climb');
+    if (this.goal) this.setNavigation('moving', 'hands-grabbed');
+    this.saveLocalPosition();
+  }
+
+  private releaseClimb(): void {
+    this.previousPhysics = null;
+    this.climb = null;
+    this.unknownFrames = 0;
+    this.descentDistance = 0;
+    this.saveLocalPosition();
   }
 
   private releaseSupport(): void {
@@ -1179,9 +1603,16 @@ export class StickFigureController implements StickFigure {
     if (this.support) this.emit('surfacechange', { support: null });
     this.support = null;
     this.pendingJump = null;
+    this.descentDistance = 0;
     this.afterTransition = null;
     this.unknownFrames = 0;
     this.saveLocalPosition();
+  }
+
+  private syncPendingContactPosition(): void {
+    if (!this.body || !this.localPosition || !this.motionFrame) return;
+    const frame = readFrame(this.motionFrame);
+    if (frame) this.body.position = toClient(this.localPosition, frame);
   }
 
   private saveLocalPosition(): void {
@@ -1243,6 +1674,7 @@ export class StickFigureController implements StickFigure {
           else this.setAction('idle');
         });
       }
+      if (this.climb && this.body) this.body.velocity = { x: 0, y: 0 };
       this.schedule();
       this.flushEvents();
     };
@@ -1259,8 +1691,8 @@ export class StickFigureController implements StickFigure {
     this.pendingAction = null;
     this.pendingJump = null;
     this.actionTarget = null;
+    this.climbFlight = null;
     this.dash = null;
-    this.landingRoll = false;
     this.resumeMotion = null;
     const hadTarget = this.explorationTarget !== null || this.targetId !== null;
     this.explorationTarget = null;
@@ -1272,12 +1704,31 @@ export class StickFigureController implements StickFigure {
 
   private finishMove(status: ActionResult['status'], reason?: string): void {
     if (!this.goal && !this.pendingMove) return;
+    const automatic = this.goal?.automatic === true;
+    this.planning = null;
+    this.planningAnchor = null;
+    this.route = [];
+    this.climbFlight = null;
+    if (automatic && this.autonomous && status !== 'completed' && ['edge', 'obstructed', 'path-changed', 'unreachable'].includes(reason ?? '')) {
+      this.retries++;
+      this.retryAt = this.simulationTime + 0.6;
+      this.dash = null;
+      this.pendingJump = null;
+      this.afterTransition = null;
+      this.targetId = null;
+      this.targetRevision = null;
+      if (this.climb && this.body) this.body.velocity = { x: 0, y: 0 };
+      if (this.action === 'walk' || this.action === 'run' || this.action === 'sprint') this.walkDuration = this.actionTime;
+      this.setNavigation('unreachable', reason ?? 'retry');
+      return;
+    }
+    this.setNavigation(status === 'completed' ? 'arrived' : 'waiting', reason ?? status);
     this.moveAbort?.();
     this.moveAbort = null;
     this.pendingMove?.({ status, ...(reason ? { reason } : {}) });
     this.pendingMove = null;
     this.goal = null;
-    this.route = [];
+    this.exploring = false;
     if (!this.pendingAction) {
       this.pendingJump = null;
       this.afterTransition = null;
@@ -1285,11 +1736,14 @@ export class StickFigureController implements StickFigure {
       this.targetRevision = null;
       this.dash = null;
       this.resumeMotion = null;
-      this.landingRoll = false;
       if (this.action === 'walk' || this.action === 'run' || this.action === 'sprint') this.walkDuration = this.actionTime;
     }
-    this.decisionAt = this.simulationTime + 0.8 + this.random();
-    this.emit('targetchange', { target: null });
+    if (this.climb && this.body) this.body.velocity = { x: 0, y: 0 };
+    this.decisionAt = this.simulationTime + 0.8;
+    if (automatic && this.autonomous && status === 'completed' && this.doc && this.chooseRandomGoal(readViewport(this.doc))) {
+      this.restUntil = status === 'completed' && this.random() < 0.35 ? this.simulationTime + 0.35 + this.random() * 0.65 : 0;
+      if (this.restUntil > this.simulationTime) this.setNavigation('resting', 'short-rest');
+    } else this.emit('targetchange', { target: null });
   }
 
   private setAction(action: ActionId): void {
@@ -1325,7 +1779,15 @@ export class StickFigureController implements StickFigure {
     }
   }
 
+  private clearIgnored(): void {
+    this.ignoredId = null;
+    this.ignoredFill = null;
+    this.ignoredRevision = null;
+    this.ignoredTime = 0;
+  }
+
   private releaseResources(): void {
+    this.clearIgnored();
     if (this.raf !== null) this.win?.cancelAnimationFrame(this.raf);
     if (this.timer !== null) this.win?.clearTimeout(this.timer);
     this.raf = null;

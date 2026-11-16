@@ -31,6 +31,9 @@
       <symbol id="icon-rest" viewBox="0 0 24 24"><circle cx="12" cy="4" r="2" /><path d="M12 6v8m0-6-5 3 4 3m1-6 5 3-4 3m-1 0-3 7m3-7 3 7" /></symbol>
       <symbol id="icon-prone" viewBox="0 0 24 24"><circle cx="18" cy="14" r="2" /><path d="m16 16-7 1-6-1m6 1-5 3m9-4 2 4h5M2 22h20" /></symbol>
       <symbol id="icon-stand" viewBox="0 0 24 24"><circle cx="11" cy="5" r="2" /><path d="m11 7-1 7 4 3v4m-4-7-5 4 3 3m3-11 4 3M20 15V4m-3 3 3-3 3 3" /></symbol>
+      <symbol id="icon-sit" viewBox="0 0 24 24"><circle cx="10" cy="5" r="2" /><path d="m10 7 1 9 7 1 3 4m-10-5 4 4 4 1m-9-10-3 6H3M2 22h20" /></symbol>
+      <symbol id="icon-question" viewBox="0 0 24 24"><circle cx="10" cy="5" r="2" /><path d="M10 7v8m0-5-4 4m4-4 5 2 1-7m-6 10-3 7m3-7 3 7m5-18c1-2 4-1 4 1 0 1-2 1-2 3m0 3v1" /></symbol>
+      <symbol id="icon-climb" viewBox="0 0 24 24"><path d="M20 2v20" /><circle cx="11" cy="6" r="2" /><path d="m11 8 1 7m0-5 4-5h4m-8 5-4 1 1 4m3 0 5 1 2 4m-7-5-5 4v3" /></symbol>
       <symbol id="icon-route" viewBox="0 0 24 24"><circle cx="4" cy="18" r="2" /><circle cx="20" cy="6" r="2" /><path d="M6 18h7a3 3 0 0 0 0-6H9a3 3 0 0 1 0-6h9" /></symbol>
     </defs>
   </svg>
@@ -39,7 +42,7 @@
     <header class="masthead">
       <a id="header-platform" class="brand" href="#main" aria-label="Mono-StickFigure 首页"><span class="wordmark">mono.</span><span class="brand-name">stickfigure</span></a>
       <nav aria-label="页面导航"><a href="#motion">动作与路线</a><a href="#reading">字里行间</a><a href="#structure">小小结构</a><a href="#scrolling">继续漫游</a></nav>
-      <span class="edition">网页漫游者 <span class="version">v0.0.1</span></span>
+      <span class="edition">网页漫游者 <span id="version" class="version"></span></span>
     </header>
 
     <main id="main">
@@ -62,7 +65,7 @@
               <summary><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16M8 4v6M16 14v6" /></svg>参数</summary>
               <div class="settings">
                 <label for="size">人物大小 <output id="size-value" for="size">16 px</output><input id="size" type="range" min="12" max="40" step="2" value="16" /></label>
-                <label for="gravity">重力 <output id="gravity-value" for="gravity">980 px/s²</output><input id="gravity" type="range" min="490" max="1470" step="490" value="980" /></label>
+                <label for="gravity">重力 <output id="gravity-value" for="gravity">9.80 m/s²</output><input id="gravity" type="range" min="4" max="20" step="any" value="9.8" /></label>
                 <label for="color-tolerance">色差阈值 <output id="tolerance-value" for="color-tolerance">0.01</output><input id="color-tolerance" type="range" min="0.01" max="0.20" step="0.01" value="0.01" /></label>
                 <p class="caption">阈值越低，越接近背景的色块也会成为平台。参数改变后重新创建人物。</p>
               </div>
@@ -78,6 +81,7 @@
               <button id="run" class="action-button"><svg class="icon" aria-hidden="true"><use href="#icon-run" /></svg>跑一段</button>
               <button id="sprint" class="action-button"><svg class="icon" aria-hidden="true"><use href="#icon-sprint" /></svg>冲刺</button>
               <button id="turn" class="action-button"><svg class="icon" aria-hidden="true"><use href="#icon-turn" /></svg>转身</button>
+              <button id="run-in-place" class="action-button"><svg class="icon" aria-hidden="true"><use href="#icon-run" /></svg>原地跑</button>
             </div>
           </div>
           <div class="action-section">
@@ -89,6 +93,7 @@
               <button id="drop" class="action-button"><svg class="icon" aria-hidden="true"><use href="#icon-fall" /></svg>向下落</button>
               <button id="land-soft" class="action-button"><svg class="icon" aria-hidden="true"><use href="#icon-land" /></svg>落地缓冲</button>
               <button id="roll" class="action-button"><svg class="icon" aria-hidden="true"><use href="#icon-roll" /></svg>翻滚</button>
+              <button id="climb" class="action-button"><svg class="icon" aria-hidden="true"><use href="#icon-climb" /></svg>攀爬往返</button>
             </div>
           </div>
           <div class="action-section">
@@ -97,6 +102,8 @@
               <button id="wave" class="action-button"><svg class="icon" aria-hidden="true"><use href="#icon-wave" /></svg>打个招呼</button>
               <button id="crouch" class="action-button"><svg class="icon" aria-hidden="true"><use href="#icon-crouch" /></svg>蹲下</button>
               <button id="rest" class="action-button"><svg class="icon" aria-hidden="true"><use href="#icon-rest" /></svg>叉腰休息</button>
+              <button id="sit" class="action-button"><svg class="icon" aria-hidden="true"><use href="#icon-sit" /></svg>坐下来</button>
+              <button id="question" class="action-button"><svg class="icon" aria-hidden="true"><use href="#icon-question" /></svg>想一想</button>
               <button id="prone" class="action-button"><svg class="icon" aria-hidden="true"><use href="#icon-prone" /></svg>趴下</button>
               <button id="stand-up" class="action-button"><svg class="icon" aria-hidden="true"><use href="#icon-stand" /></svg>起身</button>
             </div>
@@ -125,11 +132,33 @@
           <aside class="motion-notes">
             <div class="motion-note"><span class="note-number">01</span><div><h3>先助跑，再起跳。</h3><p>真正加速到起跳点。抬臂收腿，落地缓冲，再接着跑。</p><button id="demo-long-jump" class="text-button"><svg class="icon" aria-hidden="true"><use href="#icon-long-jump" /></svg>看一次助跑远跳</button></div></div>
             <div class="motion-note"><span class="note-number">02</span><div><h3>把目标交给它。</h3><p>沿可达的平台行进，跨过中间的留白。也可以随时取消。</p><div class="route-options"><label for="route-pace" class="sr-only">移动步态</label><select id="route-pace"><option value="walk">走过去</option><option value="run" selected>跑过去</option><option value="sprint">冲刺过去</option></select><button id="demo-route" class="text-button"><svg class="icon" aria-hidden="true"><use href="#icon-route" /></svg>到下一站</button></div><button id="demo-point" class="text-button">用页面坐标选择落点 <span aria-hidden="true">↗</span></button></div></div>
-            <div class="motion-note"><span class="note-number">03</span><div><h3>让冲击顺势过去。</h3><p>从高处落下，先屈膝缓冲，空间足够时接一个前滚翻。</p><button id="demo-drop" class="text-button"><svg class="icon" aria-hidden="true"><use href="#icon-roll" /></svg>看高落地与翻滚</button></div></div>
+            <div class="motion-note"><span class="note-number">03</span><div><h3>让冲击顺势过去。</h3><p>从高处落下，空间足够时立即撑手滚入；肩背带过身体，展腿重新站稳。</p><button id="demo-drop" class="text-button"><svg class="icon" aria-hidden="true"><use href="#icon-roll" /></svg>看高落地与翻滚</button></div></div>
             <div class="terrain-tools"><button class="text-button" data-place="motion-runway">到长平台上</button><button class="text-button" data-place="route-source">到起点上</button><button id="cancel-route" class="text-button" disabled>取消当前请求</button></div>
             <div class="route-feedback" data-mono-stickfigure><span id="route-sequence" class="motion-sequence">等待出发</span><p id="route-message" class="caption" role="status">选一段旅程，看看动作怎样接起来。</p></div>
           </aside>
         </div>
+      </section>
+
+      <section id="climbing" class="chapter" aria-labelledby="climb-title">
+        <div class="chapter-heading"><h2 id="climb-title">向上，也有路。</h2><span class="chapter-label">真实竖边 · 陡斜边 · 跳回平台</span></div>
+        <div id="climb-terrain" class="climb-layout">
+          <div class="climb-course" aria-label="真实纯色竖墙攀爬路线">
+            <div class="terrain-heading"><span>抓住竖直边，交替换手换脚。</span><span>90°</span></div>
+            <div id="climb-start" class="climb-platform climb-start">起点</div>
+            <div id="climb-wall" class="climb-wall"><span>竖墙</span></div>
+            <div id="climb-return" class="climb-platform climb-return">跳回来</div>
+          </div>
+          <div class="climb-course" aria-label="真实二维旋转陡斜边攀爬路线">
+            <div class="terrain-heading"><span>一条实际旋转的实线边。</span><span>84°</span></div>
+            <div id="slope-start" class="climb-platform climb-start">起点</div>
+            <div id="climb-slope" class="climb-slope" aria-label="84 度实线斜边"></div>
+            <div id="slope-return" class="climb-platform climb-return">跳回来</div>
+            <div id="slope-limit" class="slope-limit" aria-label="80 度边，不在攀爬范围内"></div>
+          </div>
+        </div>
+        <div class="inline-tools"><button id="demo-climb" class="text-button"><svg class="icon" aria-hidden="true"><use href="#icon-climb" /></svg>竖墙攀爬往返</button><button id="demo-slope" class="text-button">沿陡斜边往返 <span aria-hidden="true">↗</span></button><button class="text-button" data-place="climb-start">到攀爬起点</button></div>
+        <p id="climb-message" class="caption" role="status">真实边段大于 80° 且有足够抓附空间才能攀爬；右侧短线恰为 80°，不应识别为攀爬面。</p>
+        <div class="navigation-feedback" data-mono-stickfigure><p id="navigation-state" class="caption">等待目的地。</p><pre id="navigation-history">等待路线决策。</pre></div>
       </section>
 
       <section id="reading" class="chapter reading-chapter" aria-labelledby="reading-title">
@@ -148,7 +177,7 @@
   root: document,
   appearance: { height: 16 },
   autonomous: true,
-  physics: { gravity: 980, jumpHeight: 52 },
+  physics: { gravity: 9.8, jumpHeight: 52 },
   recognition: { colorTolerance: 0.01 }
 });
 await actor.start();</code></pre>
@@ -156,7 +185,7 @@ await actor.start();</code></pre>
             <div id="physics-note" class="physics-note">
               <h3>起跳之后，交给重力。</h3>
               <p class="equation">v = v₀ + gt<br />y = y₀ + v₀t + ½gt²</p>
-              <p class="caption">以 CSS px 和秒为单位。身体姿态可以变化，空中位置仍按物理运动推进。</p>
+              <p class="caption">以 CSS px 和秒为单位，求解时将重力乘以 100（CSS px/m）。身体姿态可以变化，空中位置仍按物理运动推进。</p>
             </div>
           </aside>
         </div>

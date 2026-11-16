@@ -1,4 +1,5 @@
 import type { ActionId } from '../types';
+import type { Point } from '../scene/types';
 import { solveTwoBone } from './ik';
 
 export const JOINT = {
@@ -15,8 +16,10 @@ export const BONES: readonly (readonly [number, number])[] = [
 export const TURN_DURATION = 0.26;
 export const LAND_DURATION = 0.24;
 export const ROLL_DURATION = 0.92;
+export const CLIMB_GRAB_DURATION = 0.65;
+const CLIMB_STRIDE = 0.4;
 export const STAND_DURATION = 0.48;
-export const POSE_DURATION = { wave: 1.5, crouch: 1.5, rest: 3.2, prone: 2.6 } as const;
+export const POSE_DURATION = { wave: 1.5, crouch: 1.5, rest: 3.2, prone: 2.6, sit: 3.2, question: 1.8, 'run-in-place': 2.4, climb: 2.4 } as const;
 export const TRANSITION_DURATION = { anticipate: 0.16, brake: 0.14 } as const;
 
 const clamp01 = (value: number): number => Math.max(0, Math.min(1, value));
@@ -77,11 +80,54 @@ function gaitFoot(q: number, running: boolean, sprint: number, stride: number): 
   return { x, y, angle };
 }
 
+interface RollFrame {
+  at: number;
+  hip: Point;
+  lean: number;
+  neck: number;
+  head: number;
+  feet: readonly [Point, Point];
+  hands: readonly [Point, Point];
+}
+
+const ROLL_FRAMES: readonly RollFrame[] = [
+  { at: 0, hip: { x: -0.04, y: -0.38 }, lean: 0.50, neck: 0.40, head: 0.30, feet: [{ x: -0.09, y: 0 }, { x: 0.10, y: 0 }], hands: [{ x: -0.17, y: -0.25 }, { x: 0.16, y: -0.26 }] },
+  { at: 0.16, hip: { x: -0.12, y: -0.20 }, lean: 1.15, neck: 0.90, head: 0.70, feet: [{ x: -0.17, y: 0 }, { x: 0.07, y: 0 }], hands: [{ x: 0.25, y: 0 }, { x: 0.20, y: 0 }] },
+  { at: 0.34, hip: { x: -0.12, y: -0.24 }, lean: 2.30, neck: 0.80, head: 0.35, feet: [{ x: -0.19, y: -0.08 }, { x: 0.16, y: -0.05 }], hands: [{ x: 0.25, y: 0 }, { x: 0.13, y: -0.01 }] },
+  { at: 0.50, hip: { x: 0.02, y: -0.20 }, lean: 3.35, neck: 1.50, head: 0.40, feet: [{ x: 0.16, y: -0.44 }, { x: 0.29, y: -0.29 }], hands: [{ x: 0.15, y: -0.02 }, { x: 0.24, y: -0.08 }] },
+  { at: 0.68, hip: { x: 0.07, y: -0.19 }, lean: 4.90, neck: 3.10, head: 1.10, feet: [{ x: 0.22, y: -0.20 }, { x: -0.16, y: -0.35 }], hands: [{ x: 0.15, y: -0.02 }, { x: 0.10, y: 0 }] },
+  { at: 0.84, hip: { x: 0.08, y: -0.22 }, lean: 6.42, neck: 6.35, head: 6.28, feet: [{ x: 0.23, y: 0 }, { x: -0.12, y: -0.025 }], hands: [{ x: 0.15, y: -0.10 }, { x: -0.03, y: -0.16 }] },
+  { at: 1, hip: { x: 0, y: -0.507 }, lean: Math.PI * 2, neck: Math.PI * 2, head: Math.PI * 2, feet: [{ x: -0.04, y: 0 }, { x: 0.04, y: 0 }], hands: [{ x: -0.03, y: -0.35 }, { x: 0.06, y: -0.34 }] },
+];
+
+function rollFrame(progress: number): RollFrame {
+  const index = ROLL_FRAMES.findIndex((frame) => frame.at >= progress);
+  const to = ROLL_FRAMES[Math.max(1, index)]!;
+  const from = ROLL_FRAMES[Math.max(0, index - 1)]!;
+  const amount = smoothstep(clamp01((progress - from.at) / (to.at - from.at)));
+  const point = (a: Point, b: Point): Point => ({ x: mix(a.x, b.x, amount), y: mix(a.y, b.y, amount) });
+  return { at: progress, hip: point(from.hip, to.hip), lean: mix(from.lean, to.lean, amount), neck: mix(from.neck, to.neck, amount), head: mix(from.head, to.head, amount),
+    feet: [point(from.feet[0], to.feet[0]), point(from.feet[1], to.feet[1])], hands: [point(from.hands[0], to.hands[0]), point(from.hands[1], to.hands[1])] };
+}
+
+function climbPoint(normal: Point, offset: number, lift = 0): Point {
+  return { x: normal.x * (lift - 0.26) - normal.y * offset, y: normal.y * (lift - 0.26) + normal.x * offset };
+}
+
+function climbGrip(normal: Point, phase: number, hand: boolean): Point {
+  const q = ((phase % 1) + 1) % 1;
+  const top = hand ? 0.70 : 0.30;
+  if (q < 0.75) return climbPoint(normal, top - q * CLIMB_STRIDE);
+  const u = (q - 0.75) / 0.25;
+  return climbPoint(normal, mix(top - 0.75 * CLIMB_STRIDE, top, smoothstep(u)), Math.sin(Math.PI * u) * (hand ? 0.06 : 0.08));
+}
+
 export function transitionDuration(from: ActionId | null, to: ActionId): number {
   if (!from) return 0.001;
   if (to === 'roll' || from === 'roll') return 0.14;
   if (to === 'turn') return TURN_DURATION;
-  if (to === 'stand-up' || from === 'prone' || to === 'prone') return STAND_DURATION;
+  if (to === 'stand-up' || from === 'prone' || to === 'prone' || from === 'sit' || to === 'sit') return STAND_DURATION;
+  if (to === 'climb' || from === 'climb') return 0.12;
   if (to === 'crouch' || from === 'crouch') return 0.26;
   if (to === 'anticipate') return TRANSITION_DURATION.anticipate;
   if (to === 'brake') return TRANSITION_DURATION.brake;
@@ -111,6 +157,15 @@ export interface Pose {
   airProgress: number;
   standProne: number;
   standCrouch: number;
+  standSit: number;
+  sit: number;
+  question: number;
+  inPlace: number;
+  inPlacePhase: number;
+  climbing: number;
+  climbNormal: Point;
+  climbDistance: number;
+  climbGripProgress: number;
   airLead: 1 | -1;
   wave: number;
   front: number;
@@ -143,13 +198,15 @@ export interface PoseInput {
   horizontalSpeed?: number;
   turnProgress?: number;
   actionDuration?: number;
+  climb?: { normal: Point; distance: number; gripProgress?: number };
+  reach?: { normal: Point; distance: number; progress: number };
 }
 
 export function createPose(): Pose {
   return {
     joints: new Float64Array(24), footAngles: new Float64Array(2), headRadius: 0,
     compression: 0, arm: -0.10, bend: 0.12, tuck: 0, lean: 0, hip: -0.507,
-    runMix: 0, sprint: 0, crouch: 0, rest: 0, prone: 0, roll: 0, rollProgress: 0, rollAngle: 0, airProgress: 0, standProne: 0, standCrouch: 0, airLead: -1, wave: 0, front: 0, walking: 0, airborne: 0,
+    runMix: 0, sprint: 0, crouch: 0, rest: 0, prone: 0, roll: 0, rollProgress: 0, rollAngle: 0, airProgress: 0, standProne: 0, standCrouch: 0, standSit: 0, sit: 0, question: 0, inPlace: 0, inPlacePhase: 0, climbing: 0, climbNormal: { x: -1, y: 0 }, climbDistance: 0, climbGripProgress: 1, airLead: -1, wave: 0, front: 0, walking: 0, airborne: 0,
     phase: 0, distance: 0,
     facing: 1, facingScale: 1, fromFacing: 1, fromFacingScale: 1, turnProgress: 1,
     action: null, fromAction: null, transition: 1, duration: 0.16,
@@ -165,8 +222,11 @@ export function samplePose(output: Pose, input: PoseInput): void {
   if (actionChanged && action === 'stand-up') {
     output.standProne = output.prone;
     output.standCrouch = output.crouch;
+    output.standSit = output.sit;
   }
-  if (actionChanged && action === 'roll') output.rollAngle -= Math.round(output.rollAngle / (Math.PI * 2)) * Math.PI * 2;
+  if (actionChanged && action === 'roll') output.rollProgress = 0;
+  if (actionChanged && output.action === 'run-in-place' && (action === 'walk' || action === 'run' || action === 'sprint')) output.phase = output.inPlacePhase;
+  if (actionChanged && action === 'run-in-place') output.inPlacePhase = 0;
   if (actionChanged && (action === 'jump' || action === 'run-jump' || action === 'running-long-jump')) {
     output.airLead = (output.joints[JOINT.leftFoot * 2]! - output.joints[JOINT.rightFoot * 2]!) * input.facing >= 0 ? -1 : 1;
     output.airProgress = 0;
@@ -195,16 +255,24 @@ export function samplePose(output: Pose, input: PoseInput): void {
   output.airProgress = mix(output.airProgress, airborne ? airProgress : 0, 1 - Math.exp(-dt / 0.04));
   const rollProgress = rolling ? clamp01(input.time / (input.actionDuration ?? ROLL_DURATION)) : output.rollProgress;
   if (rolling) output.rollProgress = rollProgress;
-  const settledAngle = Math.round(output.rollAngle / (Math.PI * 2)) * Math.PI * 2;
-  const rollShape = rolling ? smoothstep(clamp01(rollProgress / 0.16)) * (1 - smoothstep(clamp01((rollProgress - 0.76) / 0.24))) : Math.abs(output.rollAngle - settledAngle) > 0.2 ? output.roll : 0;
-  output.roll = mix(output.roll, rollShape, 1 - Math.exp(-dt / 0.045));
-  const rollAngle = rolling ? Math.PI * 2 * smoothstep(clamp01((rollProgress - 0.17) / 0.58)) : settledAngle;
-  output.rollAngle = mix(output.rollAngle, rollAngle, 1 - Math.exp(-dt / (rolling ? 0.02 : 0.08)));
+  output.roll = mix(output.roll, rolling ? 1 : 0, 1 - Math.exp(-dt / 0.045));
+  output.rollAngle = 0;
+  const roll = output.roll > 1e-5 ? rollFrame(output.rollProgress) : ROLL_FRAMES[0]!;
+  const inPlace = action === 'run-in-place';
+  const climbing = action === 'climb' && input.climb !== undefined;
+  if (input.climb) {
+    output.climbNormal.x = input.climb.normal.x * input.facing;
+    output.climbNormal.y = input.climb.normal.y;
+    output.climbDistance = input.climb.distance;
+    output.climbGripProgress = clamp01(input.climb.gripProgress ?? 1);
+  }
+  const normal = output.climbNormal;
+  const climbPhase = output.climbDistance / (h * CLIMB_STRIDE);
   const preparing = action === 'anticipate';
   const speed = Math.abs(input.horizontalSpeed ?? 0);
   const movingTransition = (action === 'brake' || preparing || landing) && speed > 0.5;
   const walking = action === 'walk' || action === 'run' || action === 'sprint' || movingTransition;
-  const running = action === 'run' || action === 'sprint' || action === 'run-jump' || action === 'running-long-jump' || (movingTransition && (speed > h * 2 || output.runMix > 0.5));
+  const running = inPlace || action === 'run' || action === 'sprint' || action === 'run-jump' || action === 'running-long-jump' || (movingTransition && (speed > h * 2 || output.runMix > 0.5));
   const idleLike = !airborne && !walking && !rolling && action !== 'prone';
   const breath = idleLike ? Math.sin((input.clock ?? 0) * 1.9) : 0;
   const sway = idleLike ? Math.sin((input.clock ?? 0) * 1.9 + 0.8) : 0;
@@ -225,13 +293,19 @@ export function samplePose(output: Pose, input: PoseInput): void {
   output.sprint = mix(output.sprint, action === 'sprint' || action === 'running-long-jump' ? 1 : 0, blend);
   const standProgress = clamp01(input.time / STAND_DURATION);
   if (action === 'stand-up') {
+    output.sit = output.standSit * (1 - smoothstep(standProgress));
     output.prone = output.standProne * (1 - smoothstep(clamp01(standProgress / 0.56)));
     output.crouch = output.standCrouch * (1 - smoothstep(standProgress)) + output.standProne * Math.sin(Math.PI * smoothstep(standProgress)) * 0.85;
   } else {
+    output.sit = mix(output.sit, action === 'sit' ? 1 : 0, blend);
     const lowering = action === 'prone' ? clamp01(input.time / STAND_DURATION) : 0;
     output.crouch = mix(output.crouch, action === 'crouch' ? 1 : Math.sin(Math.PI * lowering) * 0.65, blend);
     output.prone = mix(output.prone, action === 'prone' ? smoothstep(clamp01((lowering - 0.25) / 0.75)) : 0, blend);
   }
+  output.question = mix(output.question, action === 'question' ? 1 : 0, blend);
+  output.inPlace = mix(output.inPlace, inPlace ? 1 : 0, blend);
+  output.climbing = mix(output.climbing, climbing ? 1 : 0, blend);
+  if (inPlace) output.inPlacePhase += dt * 2.8;
   output.rest = mix(output.rest, action === 'rest' ? 1 : 0, blend);
   output.wave = mix(output.wave, waveEnvelope, blend);
   output.hip = mix(output.hip, -0.507, blend);
@@ -246,7 +320,7 @@ export function samplePose(output: Pose, input: PoseInput): void {
   const distance = input.distance ?? 0;
   output.phase += Math.max(0, distance - output.distance) / cycleLength;
   output.distance = distance;
-  const phase = output.phase;
+  const phase = mix(output.phase, output.inPlacePhase, output.inPlace);
   const feet = ([-1, 1] as const).map((side) => {
     const q = ((phase + (side === -1 ? 0 : 0.5)) % 1 + 1) % 1;
     const walk = gaitFoot(q, false, 0, 0.76), run = gaitFoot(q, true, output.sprint, runStride);
@@ -259,18 +333,38 @@ export function samplePose(output: Pose, input: PoseInput): void {
     x = mix(x, side * 0.085, output.front * (1 - output.walking) * (1 - output.airborne));
     x = mix(x, -0.745, output.prone);
     y = mix(y, 0, output.prone);
-    x = mix(x, 0.018 + side * 0.018, output.roll);
-    y = mix(y, -0.065 + side * 0.012, output.roll);
+    const stationaryPhase = ((output.inPlacePhase + (side === -1 ? 0 : 0.5)) % 1 + 1) % 1;
+    const lift = stationaryPhase < 0.5 ? Math.sin(stationaryPhase * Math.PI * 2) : 0;
+    x = mix(x, side * 0.025 + lift * 0.12, output.inPlace);
+    y = mix(y, -lift * 0.29, output.inPlace);
+    x = mix(x, side === -1 ? 0.31 : 0.46, output.sit);
+    y = mix(y, Math.sin(-0.12) * 0.035, output.sit);
+    const rolledFoot = roll.feet[side === -1 ? 0 : 1];
+    x = mix(x, rolledFoot.x, output.roll);
+    y = mix(y, rolledFoot.y, output.roll);
+    const brace = smoothstep(clamp01((output.climbGripProgress - (side === -1 ? 0.30 : 0.60)) / (side === -1 ? 0.25 : 0.30)));
+    if (output.climbing > 1e-5) {
+      x = mix(x, -0.06 + side * 0.035, output.climbing * (1 - brace));
+      y = mix(y, 0.10 + side * 0.015, output.climbing * (1 - brace));
+      const grip = climbGrip(normal, climbPhase + (side === -1 ? 0.25 : 0.75), false);
+      x = mix(x, grip.x, output.climbing * brace);
+      y = mix(y, grip.y, output.climbing * brace);
+    }
     const groundAngle = mix(walk.angle, run.angle, output.runMix) * output.walking * (1 - output.prone);
     const airAngle = jumping ? mix(leading ? -0.12 : 0.55, -0.10, descending) : 0.12;
-    const angle = mix(mix(groundAngle, airAngle, output.airborne), 0.65, output.roll);
+    let angle = mix(groundAngle, airAngle, output.airborne);
+    angle = mix(angle, lift ? -0.15 : 0, output.inPlace);
+    angle = mix(angle, -0.12, output.sit);
+    angle = mix(angle, rollProgress < 0.34 || rollProgress > 0.76 ? 0 : -0.35, output.roll);
+    angle = mix(angle, 0.12, output.climbing * (1 - brace));
+    angle = mix(angle, Math.atan2(-normal.x, normal.y), output.climbing * brace);
     output.footAngles[side === -1 ? 0 : 1] = angle;
     return { side, x: x * h, y: y * h };
   });
   if (action === 'land-soft') {
     for (const foot of feet) foot.y = 0;
-  } else if (!airborne && !rolling) {
-    const highestFoot = Math.max(...feet.map((foot) => foot.y));
+  } else if (!airborne && !rolling && output.climbing < 1e-5) {
+    const highestFoot = Math.max(...feet.map((foot, index) => foot.y - Math.sin(output.footAngles[index]!) * h * 0.035 * output.sit));
     for (const foot of feet) foot.y -= highestFoot;
   }
   const runPhase = ((phase % 0.5) + 0.5) % 0.5;
@@ -280,15 +374,30 @@ export function samplePose(output: Pose, input: PoseInput): void {
   const runHip = runPhase < stance ? -0.477 + 0.034 * Math.sin(Math.PI * supportProgress) - 0.008 * smoothstep(clamp01((supportProgress - 0.65) / 0.35)) : mix(-0.485, -0.477, smoothstep(flightProgress)) - 0.024 * Math.sin(Math.PI * flightProgress);
   const walkHip = -0.487 + 0.016 * Math.cos(phase * Math.PI * 4);
   const hip = {
-    x: mix(sway * 0.003 + output.runMix * output.walking * 0.018 - output.crouch * 0.12 - output.prone * 0.24, -0.13, output.roll) * h,
-    y: h * mix(mix(mix(output.hip, mix(walkHip, runHip, output.runMix), output.walking) + output.compression + output.crouch * 0.21, -0.075, output.prone), -0.15, output.roll) - breath * h * 0.002,
+    x: (sway * 0.003 + output.runMix * output.walking * 0.018 - output.crouch * 0.12 - output.prone * 0.24) * h,
+    y: h * mix(mix(output.hip, mix(walkHip, runHip, output.runMix), output.walking) + output.compression + output.crouch * 0.21, -0.075, output.prone) - breath * h * 0.002,
   };
+  hip.x = mix(hip.x, 0.01 * h, output.inPlace);
+  hip.y = mix(hip.y, (-0.47 - Math.sin(phase * Math.PI * 4) * 0.008) * h, output.inPlace);
+  hip.x = mix(hip.x, -0.035 * h, output.sit);
+  hip.y = mix(hip.y, 0, output.sit);
+  hip.x = mix(hip.x, roll.hip.x * h, output.roll);
+  hip.y = mix(hip.y, roll.hip.y * h, output.roll);
+  if (output.climbing > 1e-5) {
+    const climbingHip = climbPoint(normal, 0.38, 0.23);
+    hip.x = mix(hip.x, climbingHip.x * h, output.climbing);
+    hip.y = mix(hip.y, climbingHip.y * h, output.climbing);
+  }
   for (const foot of feet) {
     const dx = foot.x - hip.x;
     const reach = Math.sqrt(Math.max(0, (h * 0.5095) ** 2 - dx ** 2));
     hip.y = Math.max(hip.y, foot.y - reach);
   }
-  const lean = mix(mix(output.lean + Math.sin(phase * Math.PI * 4) * 0.012 * output.walking, Math.PI / 2 - 0.12, output.prone), 0.94, output.roll);
+  let lean = mix(output.lean + Math.sin(phase * Math.PI * 4) * 0.012 * output.walking, Math.PI / 2 - 0.12, output.prone);
+  lean = mixAngle(lean, -0.22, output.sit);
+  lean = mixAngle(lean, 0.10, output.inPlace);
+  lean = mixAngle(lean, roll.lean, output.roll);
+  lean = mixAngle(lean, Math.atan2(-normal.y - normal.x * 0.16, -normal.x + normal.y * 0.16), output.climbing);
   const chest = { x: hip.x + Math.sin(lean) * h * 0.22, y: hip.y - Math.cos(lean) * h * 0.22 };
   const turnFront = 1 - Math.abs(output.facingScale);
   const put = (id: number, x: number, y: number, frontX = 0) => {
@@ -297,11 +406,12 @@ export function samplePose(output: Pose, input: PoseInput): void {
   };
   put(JOINT.pelvis, hip.x, hip.y);
   put(JOINT.chest, chest.x, chest.y);
-  const neckLean = lean + output.roll * 0.24;
+  const neckLean = mixAngle(lean, roll.neck, output.roll);
   const neck = { x: chest.x + Math.sin(neckLean) * h * 0.065, y: chest.y - Math.cos(neckLean) * h * 0.065 };
-  const headLean = mix(lean, 3.7, output.roll);
+  const headLean = mixAngle(lean, roll.head, output.roll);
   put(JOINT.neck, neck.x, neck.y);
-  put(JOINT.head, neck.x + Math.sin(headLean) * h * 0.12, neck.y - Math.cos(headLean) * h * 0.12);
+  const head = { x: neck.x + Math.sin(headLean) * h * 0.12, y: neck.y - Math.cos(headLean) * h * 0.12 };
+  put(JOINT.head, head.x, head.y);
 
   const legs = feet.map((foot) => ({ ...foot, leg: solveTwoBone(hip, { x: foot.x, y: foot.y }, h * 0.255, h * 0.255, -1) }));
   for (let i = 0; i < legs.length; i++) {
@@ -335,9 +445,31 @@ export function samplePose(output: Pose, input: PoseInput): void {
     const lyingUpper = Math.acos(clamp01((-h * 0.006 - chest.y) / (h * 0.19)));
     upperAngle = mixAngle(upperAngle, lyingUpper, output.prone);
     forearmAngle = mixAngle(forearmAngle, Math.PI / 2, output.prone);
-    const tucked = solveTwoBone(chest, { x: hip.x + h * (0.18 + side * 0.014), y: hip.y - h * (0.10 - side * 0.008) }, h * 0.19, h * 0.18, 1);
-    upperAngle = mixAngle(upperAngle, Math.atan2(tucked.joint.x - chest.x, tucked.joint.y - chest.y), output.roll);
-    forearmAngle = mixAngle(forearmAngle, Math.atan2(tucked.end.x - tucked.joint.x, tucked.end.y - tucked.joint.y), output.roll);
+    const stationarySwing = Math.cos(phase * Math.PI * 2) * (side === -1 ? 1 : -1);
+    upperAngle = mixAngle(upperAngle, -0.18 + stationarySwing * 0.85, output.inPlace);
+    forearmAngle = mixAngle(forearmAngle, 1.02 + stationarySwing * 0.65, output.inPlace);
+    const constrainHand = (target: Point, amount: number, bend: 1 | -1 = 1) => {
+      if (amount <= 1e-5) return;
+      const arm = solveTwoBone(chest, target, h * 0.19, h * 0.18, bend);
+      upperAngle = mixAngle(upperAngle, Math.atan2(arm.joint.x - chest.x, arm.joint.y - chest.y), amount);
+      forearmAngle = mixAngle(forearmAngle, Math.atan2(arm.end.x - arm.joint.x, arm.end.y - arm.joint.y), amount);
+    };
+    if (output.sit > 1e-5) constrainHand({ x: h * (side === -1 ? -0.28 : -0.24), y: 0 }, output.sit, -1);
+    if (side === 1 && output.question > 1e-5) constrainHand({ x: head.x - h * 0.005, y: head.y - h * 0.055 + Math.sin(input.time * 8) * h * 0.035 }, output.question);
+    if (output.roll > 1e-5) {
+      const rollingHand = roll.hands[side === -1 ? 0 : 1];
+      constrainHand({ x: rollingHand.x * h, y: rollingHand.y * h }, output.roll, -1);
+    }
+    if (input.reach && airborne) {
+      const reachingNormal = { x: input.reach.normal.x * input.facing, y: input.reach.normal.y };
+      const reachingHand = climbPoint(reachingNormal, side === -1 ? 0.70 : 0.50, 0.26 - input.reach.distance / h);
+      constrainHand({ x: reachingHand.x * h, y: reachingHand.y * h }, clamp01(input.reach.progress), -1);
+    }
+    if (output.climbing > 1e-5) {
+      const climbingHand = climbGrip(normal, climbPhase + (side === -1 ? 0 : 0.5), true);
+      // 已建立的手部接触不能随全身融合滑离墙面。
+      constrainHand({ x: climbingHand.x * h, y: climbingHand.y * h }, climbing ? 1 : output.climbing, -1);
+    }
     upperAngle = mixAngle(upperAngle, side * 0.32, turnFront);
     forearmAngle = mixAngle(forearmAngle, side * 0.18, turnFront);
     const upperX = Math.sin(upperAngle) * h * 0.19;
@@ -353,19 +485,10 @@ export function samplePose(output: Pose, input: PoseInput): void {
     put(side === -1 ? JOINT.leftElbow : JOINT.rightElbow, elbow.x, elbow.y, side * Math.abs(upperX));
     put(side === -1 ? JOINT.leftHand : JOINT.rightHand, hand.x, hand.y, side * Math.abs(upperX + lowerX));
   }
-  if (output.roll > 1e-5 || Math.abs(Math.sin(output.rollAngle / 2)) > 1e-5) {
-    const angle = output.rollAngle * input.facing;
-    const cosine = Math.cos(angle), sine = Math.sin(angle);
-    const centerY = -h * 0.25;
-    for (let i = 0; i < output.joints.length; i += 2) {
-      const x = output.joints[i]!, y = output.joints[i + 1]! - centerY;
-      output.joints[i] = x * cosine - y * sine;
-      output.joints[i + 1] = x * sine + y * cosine + centerY;
-    }
+  if (output.roll > 1e-5) {
     let bottom = output.joints[JOINT.head * 2 + 1]! + output.headRadius;
     for (let i = 1; i < output.joints.length; i += 2) bottom = Math.max(bottom, output.joints[i]!);
     for (const [index, foot] of [JOINT.leftFoot, JOINT.rightFoot].entries()) {
-      output.footAngles[index] = output.footAngles[index]! + output.rollAngle;
       const y = output.joints[foot * 2 + 1]!, dy = Math.sin(output.footAngles[index]!) * h;
       bottom = Math.max(bottom, y - dy * 0.035, y + dy * 0.075);
     }

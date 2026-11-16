@@ -56,6 +56,58 @@ export function axisScale(element: Element): Point | null {
   return { x, y };
 }
 
+export interface RectGeometry {
+  width: number;
+  height: number;
+  x: Point;
+  y: Point;
+  origin: Point;
+}
+
+export function readRectGeometry(element: Element, style = element.ownerDocument.defaultView!.getComputedStyle(element), box = element.getBoundingClientRect()): RectGeometry | null {
+  if (element.namespaceURI !== 'http://www.w3.org/1999/xhtml' || element.getClientRects().length !== 1 || style.perspective !== 'none' || (style.zoom && Number(style.zoom) !== 1)) return null;
+  const parent = parentElement(element);
+  const inherited = parent ? axisScale(parent) : { x: 1, y: 1 };
+  if (!inherited) return null;
+  const matrix = new DOMMatrixReadOnly(style.transform === 'none' ? undefined : style.transform);
+  if (!matrix.is2D || matrix.a * matrix.d - matrix.b * matrix.c <= 0 || Math.abs(matrix.a * matrix.c + matrix.b * matrix.d) > 1e-7) return null;
+  let angle = 0;
+  if (style.rotate && style.rotate !== 'none') {
+    const match = style.rotate.match(/^(?:z\s+)?([-+\d.e]+)(deg|rad|turn|grad)$/);
+    if (!match) return null;
+    angle = Number(match[1]) * (match[2] === 'rad' ? 1 : match[2] === 'turn' ? Math.PI * 2 : match[2] === 'grad' ? Math.PI / 200 : Math.PI / 180);
+  }
+  const scales = style.scale && style.scale !== 'none' ? style.scale.split(/\s+/).map(Number) : [1];
+  const sx = scales[0]!, sy = scales[1] ?? sx;
+  if (!(sx > 0 && sy > 0) || scales.length > 2 || (style.translate && style.translate !== 'none' && style.translate.split(/\s+/).length > 2)) return null;
+  const cosine = Math.cos(angle), sine = Math.sin(angle);
+  const x = { x: (cosine * sx * matrix.a - sine * sy * matrix.b) * inherited.x, y: (sine * sx * matrix.a + cosine * sy * matrix.b) * inherited.y };
+  const y = { x: (cosine * sx * matrix.c - sine * sy * matrix.d) * inherited.x, y: (sine * sx * matrix.c + cosine * sy * matrix.d) * inherited.y };
+  const extra = (horizontal: boolean) => horizontal
+    ? Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight) + Number.parseFloat(style.borderLeftWidth) + Number.parseFloat(style.borderRightWidth)
+    : Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom) + Number.parseFloat(style.borderTopWidth) + Number.parseFloat(style.borderBottomWidth);
+  const measuredWidth = Number.parseFloat(style.width), measuredHeight = Number.parseFloat(style.height);
+  const width = Number.isFinite(measuredWidth) ? measuredWidth + (style.boxSizing === 'border-box' ? 0 : extra(true)) : (element as HTMLElement).offsetWidth;
+  const height = Number.isFinite(measuredHeight) ? measuredHeight + (style.boxSizing === 'border-box' ? 0 : extra(false)) : (element as HTMLElement).offsetHeight;
+  if (!(width > 0 && height > 0) || ![x.x, x.y, y.x, y.y, width, height].every(Number.isFinite)) return null;
+  const minX = Math.min(0, x.x * width, y.x * height, x.x * width + y.x * height);
+  const minY = Math.min(0, x.y * width, y.y * height, x.y * width + y.y * height);
+  const expectedWidth = Math.abs(x.x * width) + Math.abs(y.x * height);
+  const expectedHeight = Math.abs(x.y * width) + Math.abs(y.y * height);
+  if (Math.abs(expectedWidth - box.width) > 0.75 || Math.abs(expectedHeight - box.height) > 0.75) return null;
+  return { width, height, x, y, origin: { x: box.left - minX, y: box.top - minY } };
+}
+
+export function rectPoint(point: Point, geometry: RectGeometry): Point {
+  return { x: geometry.origin.x + point.x * geometry.x.x + point.y * geometry.y.x, y: geometry.origin.y + point.x * geometry.x.y + point.y * geometry.y.y };
+}
+
+export function rectLocal(point: Point, geometry: RectGeometry): Point {
+  const dx = point.x - geometry.origin.x, dy = point.y - geometry.origin.y;
+  const determinant = geometry.x.x * geometry.y.y - geometry.x.y * geometry.y.x;
+  return { x: (dx * geometry.y.y - dy * geometry.y.x) / determinant, y: (dy * geometry.x.x - dx * geometry.x.y) / determinant };
+}
+
 export function selectFrame(element: Element): MotionFrame {
   const doc = element.ownerDocument;
   const win = doc.defaultView!;

@@ -1,7 +1,8 @@
-import { createStickFigure } from '../dist/index.mjs';
+import { createStickFigure, VERSION } from '../dist/index.mjs';
 import type { StickFigure, ActionId, ActionResult } from '../dist/index.mjs';
 
 const element = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+element('version').textContent = `v${VERSION}`;
 const panel = element<HTMLDivElement>('panel');
 const landing = element<HTMLButtonElement>('landing');
 const state = element('state');
@@ -21,6 +22,8 @@ const labels: Record<string, string> = {
   created: '未启动', starting: '正在识别', running: '运行中', paused: '已暂停', destroyed: '已销毁',
   idle: '站立', walk: '行走', run: '跑步', sprint: '冲刺', turn: '转身', anticipate: '起跳预备', brake: '制动',
   wave: '招呼', crouch: '蹲下', rest: '叉腰休息', prone: '趴下', 'stand-up': '起身', jump: '跳跃',
+  sit: '坐姿', question: '疑问', 'run-in-place': '原地跑', climb: '攀爬',
+  waiting: '等待目标', planning: '规划中', moving: '行进中', resting: '短暂休息', unreachable: '暂不可达', arrived: '已到达',
   'run-jump': '跑跳', 'running-long-jump': '助跑远跳', fall: '坠落', 'land-soft': '落地缓冲', roll: '翻滚',
 };
 const reasons: Record<string, string> = {
@@ -37,11 +40,12 @@ const reasons: Record<string, string> = {
 function tell(text: string): void {
   message.textContent = text;
   element('route-message').textContent = text;
+  element('climb-message').textContent = text;
 }
 
 function showAction(result: ActionResult, name: string): void {
   if (result.reason === 'aborted') {
-    tell(`${name}已取消。空中运动仍会自然落地，翻滚会先起身。`);
+    tell(`${name}已取消。空中仍会自然落地，攀爬停止换手换脚并保留有效抓持，翻滚会先起身。`);
   } else if (result.status === 'completed') {
     tell(`${name}已完成${result.reason ? `：${reasons[result.reason] ?? result.reason}` : '。'}`);
   } else {
@@ -89,7 +93,7 @@ async function create(): Promise<void> {
   const current = createStickFigure({
     root: document, seed: 7, debug: true, autonomous,
     appearance: { height: Number(size.value), color: '#181818', lineWidth: 1.2 },
-    physics: { gravity: Number(gravity.value), jumpHeight: 52 },
+    physics: { gravity: Number(gravity.value), jumpHeight: 52, maxFallSpeed: 600 },
     recognition: { colorTolerance: Number(tolerance.value) },
   });
   actor = current;
@@ -211,7 +215,7 @@ async function place(id: string): Promise<void> {
   tell(`已站到${surface ? names[surface.kind] : '落脚点'}上。`);
 }
 
-for (const id of ['idle', 'walk', 'run', 'sprint', 'jump', 'run-jump', 'wave', 'crouch', 'rest', 'prone', 'stand-up', 'turn', 'running-long-jump', 'land-soft', 'roll'] as const) element(id).onclick = () => action(id);
+for (const id of ['idle', 'walk', 'run', 'sprint', 'jump', 'run-jump', 'wave', 'crouch', 'rest', 'prone', 'stand-up', 'turn', 'running-long-jump', 'land-soft', 'roll', 'sit', 'question', 'run-in-place'] as const) element(id).onclick = () => action(id);
 element('drop').onclick = () => action('fall');
 for (const button of cancelButtons) button.onclick = cancelRequest;
 element('demo-long-jump').onclick = () => run(perform('助跑远跳', async (current, signal) => {
@@ -234,6 +238,31 @@ for (const id of ['demo-route', 'demo-point']) element(id).onclick = () => run(p
   const box = target.getBoundingClientRect();
   return current.moveTo({ position: { x: box.left + box.width / 2 + scrollX, y: box.top + scrollY }, coordinateSpace: 'document' }, { pace, signal });
 }));
+async function climbRoute(slope: boolean, current: StickFigure, signal: AbortSignal): Promise<ActionResult> {
+  autonomous = false;
+  current.setAutonomous(false);
+  showMode();
+  element('climb-terrain').scrollIntoView({ block: 'center', behavior: 'instant' });
+  await frame();
+  await frame();
+  if (signal.aborted || actor !== current) return { status: 'interrupted', reason: 'aborted' };
+  const wall = element(slope ? 'climb-slope' : 'climb-wall');
+  const destination = element(slope ? 'slope-return' : 'climb-return');
+  current.pause();
+  await current.place(wall);
+  await current.place(destination);
+  const placed = await current.place(element(slope ? 'slope-start' : 'climb-start'));
+  current.resume();
+  element('pause').textContent = '暂停人物';
+  await frame();
+  if (signal.aborted || actor !== current) return { status: 'interrupted', reason: 'aborted' };
+  if (placed.status !== 'placed') return { status: 'rejected', reason: placed.reason };
+  const climbed = await current.requestAction('climb', { target: wall, signal });
+  if (climbed.status !== 'completed' || signal.aborted) return climbed;
+  return current.moveTo(destination, { pace: 'walk', signal });
+}
+
+for (const id of ['climb', 'demo-climb', 'demo-slope']) element(id).onclick = () => run(perform(id === 'demo-slope' ? '陡斜边往返' : '竖墙攀爬往返', (current, signal) => climbRoute(id === 'demo-slope', current, signal)));
 element('restart').onclick = () => { window.demoReady = create(); run(window.demoReady); };
 element('autonomy').onclick = () => {
   autonomous = !autonomous;
@@ -242,7 +271,7 @@ element('autonomy').onclick = () => {
   tell(autonomous ? '自由漫游开启，它会选择目标，再寻找可达路线。' : '自由决定已停止；正在进行的跳跃或坠落仍会正常完成。');
 };
 size.oninput = () => { element('size-value').textContent = `${size.value} px`; };
-gravity.oninput = () => { element('gravity-value').textContent = `${gravity.value} px/s²`; };
+gravity.oninput = () => { element('gravity-value').textContent = `${Number(gravity.value).toFixed(2)} m/s²`; };
 tolerance.oninput = () => { element('tolerance-value').textContent = Number(tolerance.value).toFixed(2); };
 for (const setting of [size, gravity, tolerance]) setting.onchange = () => {
   window.demoReady = create();
@@ -301,17 +330,23 @@ const diagnostics = window.setInterval(() => {
     `动作  ${labels[snapshot.action]} / 朝${snapshot.facing === 1 ? '右' : '左'}`,
     `自由活动  ${snapshot.autonomous ? '开' : '关'}`,
     `大小  ${snapshot.appearance.height} px`,
-    `重力  ${snapshot.physics.gravity} px/s² / 跳高 ${snapshot.physics.jumpHeight} px`,
+    `重力  ${snapshot.physics.gravity} m/s² / 跳高 ${snapshot.physics.jumpHeight} px / 下落限速 ${snapshot.physics.maxFallSpeed} px/s`,
     `根位置  ${p ? `${p.x.toFixed(1)}, ${p.y.toFixed(1)}` : '未创建'}`,
     `速度  ${snapshot.velocity.x.toFixed(1)}, ${snapshot.velocity.y.toFixed(1)} px/s`,
-    `支撑  ${snapshot.support?.surfaceId ?? '空中'}`,
+    `支撑  ${snapshot.support?.surfaceId ?? (snapshot.climb ? `抓持 ${snapshot.climb.surfaceId}` : '空中')}`,
     `目标  ${target ? `${target.x.toFixed(1)}, ${target.y.toFixed(1)}` : '未选择'} / 路径 ${snapshot.path.length} 步`,
+    `目标距离  ${snapshot.navigation.distance === null ? '无' : `${snapshot.navigation.distance.toFixed(1)} px`} / 编号 ${snapshot.navigation.goalId}`,
+    `决策  ${labels[snapshot.navigation.status]} / ${snapshot.navigation.reason} / 重规划 ${snapshot.navigation.replans}`,
+    `规划  ${snapshot.navigation.planningMs.toFixed(2)} ms / 候选 ${snapshot.navigation.candidates} / 展开 ${snapshot.navigation.expanded} / 边检查 ${snapshot.navigation.checkedEdges}`,
     `色差阈值  ${snapshot.recognition.colorTolerance.toFixed(2)}`,
     `平台数量  ${snapshot.diagnostics.surfaceCount}`,
     `当前帧  ${snapshot.diagnostics.frameMs.toFixed(2)} ms`,
     `扫描  ${snapshot.diagnostics.scanMs.toFixed(2)} ms`,
     `暂停原因  ${snapshot.pauses.join(', ') || '无'}`,
   ].join('\n');
+  const navigation = snapshot.navigation;
+  element('navigation-state').textContent = `目的地 #${navigation.goalId} · ${labels[navigation.status]} · 距离 ${navigation.distance === null ? '未知' : `${navigation.distance.toFixed(1)} px`} · ${snapshot.path.length} 步 · ${navigation.reason}`;
+  element('navigation-history').textContent = navigation.history.slice(-8).map((decision) => `${decision.time.toFixed(1)} s  #${decision.id}  ${labels[decision.status]}  ${decision.reason}  ${decision.target ? `(${decision.target.x.toFixed(1)}, ${decision.target.y.toFixed(1)})` : '无目标'}`).join('\n') || '暂无决策记录。';
 }, 250);
 window.addEventListener('pagehide', () => {
   clearInterval(diagnostics);

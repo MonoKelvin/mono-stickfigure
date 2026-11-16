@@ -128,6 +128,17 @@ button:disabled { cursor: default; color: #929292; }
 .terrain-tools .text-button { font-size: var(--text-xs); }
 .route-feedback { border-top: 1px solid var(--line); padding-top: 16px; margin-top: 16px; }
 .route-feedback .caption { margin-top: 6px; }
+.climb-layout { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-lg); }
+.climb-course { position: relative; height: 304px; min-width: 0; background: var(--surface); }
+.climb-platform { position: absolute; height: 32px; padding: 6px 12px; background: #dedede; font-size: var(--text-xs); }
+.climb-start { left: 0; top: 252px; width: 42%; }
+.climb-return { left: 0; top: 180px; width: 40%; background: #b5b5b5; }
+.climb-wall { position: absolute; left: 48%; top: 92px; width: 26%; height: 160px; background: #626262; color: var(--surface); }
+.climb-wall > span { position: absolute; right: 12px; bottom: 12px; font-size: var(--text-xs); }
+.climb-slope { position: absolute; left: 50%; top: 252px; width: 162px; height: 4px; border-top: 2px solid #626262; transform: rotate(-84deg); transform-origin: 0 0; }
+.slope-limit { position: absolute; left: 80%; top: 252px; width: 64px; height: 2px; border-bottom: 2px solid #909090; transform: rotate(-80deg); transform-origin: 0 0; }
+.navigation-feedback { margin-top: var(--space-md); padding-top: 16px; border-top: 1px solid var(--line); }
+.navigation-feedback pre { margin: var(--space-sm) 0 0; font: 12px/1.9 Consolas, var(--font); white-space: pre-wrap; overflow-wrap: anywhere; }
 .reading-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.9fr); gap: 104px; }
 h3 { font-size: var(--text-lg); font-weight: 500; letter-spacing: -0.4px; }
 .reading-article > h3 { margin-bottom: var(--space-md); }
@@ -269,6 +280,7 @@ fieldset { min-width: 0; border: 0; padding: 0; margin: 0; }
   .action-button { padding: 8px 10px; font-size: 13px; }
   .motion-feedback { flex-direction: column; gap: 14px; }
   .lifecycle-actions { justify-content: start; gap: 12px 20px; max-width: 100%; }
+  .climb-layout { grid-template-columns: 1fr; gap: var(--space-md); }
   .motion-layout { grid-template-columns: 1fr; gap: 32px; }
   .route-terrain { height: 428px; }
   .terrain-heading { padding: 18px 16px; }

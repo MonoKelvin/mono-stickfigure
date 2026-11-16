@@ -1,6 +1,6 @@
-import type { Anchor, Body, Point, SurfaceSnapshot } from './scene/types';
+import type { Anchor, Body, ClimbContact, Point, SurfaceSnapshot } from './scene/types';
 
-export type ActionId = 'idle' | 'walk' | 'run' | 'sprint' | 'turn' | 'anticipate' | 'brake' | 'wave' | 'crouch' | 'rest' | 'prone' | 'stand-up' | 'jump' | 'run-jump' | 'running-long-jump' | 'fall' | 'land-soft' | 'roll';
+export type ActionId = 'idle' | 'walk' | 'run' | 'sprint' | 'turn' | 'anticipate' | 'brake' | 'wave' | 'crouch' | 'rest' | 'prone' | 'stand-up' | 'jump' | 'run-jump' | 'running-long-jump' | 'fall' | 'land-soft' | 'roll' | 'sit' | 'question' | 'run-in-place' | 'climb';
 export type PauseReason = 'user' | 'document-hidden' | 'offscreen' | 'verification' | 'top-layer' | 'boundary-wait';
 export type LifecycleStatus = 'created' | 'starting' | 'running' | 'paused' | 'destroyed';
 
@@ -12,8 +12,10 @@ export interface Appearance {
 }
 
 export interface Physics {
+  /** m/s²，默认 9.8，范围 4–20；内部固定以 100 CSS px/m 换算。 */
   gravity: number;
   jumpHeight: number;
+  maxFallSpeed: number;
 }
 
 export interface Recognition {
@@ -28,7 +30,7 @@ export interface StickFigureOptions {
   physics?: Partial<Physics>;
   recognition?: Partial<Recognition>;
   autonomous?: boolean;
-  performance?: { scanBudgetMs?: number; maxSurfaces?: number; maxDpr?: number };
+  performance?: { navigationBudgetMs?: number; scanBudgetMs?: number; maxSurfaces?: number; maxDpr?: number };
   boundary?: { wrapX?: boolean; wrapY?: boolean };
   motionPreference?: 'respect' | 'full';
   debug?: boolean;
@@ -75,6 +77,27 @@ export interface Diagnostics {
   droppedTimeMs: number;
 }
 
+export interface NavigationDecision {
+  id: number;
+  time: number;
+  reason: string;
+  target: Point | null;
+  status: 'waiting' | 'planning' | 'moving' | 'resting' | 'unreachable' | 'arrived';
+}
+
+export interface NavigationDiagnostics {
+  status: NavigationDecision['status'];
+  goalId: number;
+  distance: number | null;
+  reason: string;
+  planningMs: number;
+  candidates: number;
+  expanded: number;
+  checkedEdges: number;
+  replans: number;
+  history: readonly NavigationDecision[];
+}
+
 export interface StickFigureSnapshot {
   status: LifecycleStatus;
   pauses: readonly PauseReason[];
@@ -87,6 +110,8 @@ export interface StickFigureSnapshot {
   position: Point | null;
   velocity: Point;
   support: Anchor | null;
+  climb: ClimbContact | null;
+  navigation: NavigationDiagnostics;
   target: { position: Point; surfaceId?: string; u?: number } | null;
   path: readonly Point[];
   surfaces: readonly SurfaceSnapshot[];
@@ -98,6 +123,7 @@ export interface StickFigureEvents {
   statechange: LifecycleStatus;
   actionchange: { action: ActionId };
   surfacechange: { support: Anchor | null };
+  navigationchange: NavigationDecision;
   targetchange: { target: Point | null };
   boundary: { axis: 'x' | 'y' };
   error: { code: string; message: string };
@@ -116,4 +142,4 @@ export interface StickFigure {
   getSnapshot(): StickFigureSnapshot;
 }
 
-export type { Anchor, Body, Point, SurfaceSnapshot };
+export type { Anchor, Body, ClimbContact, Point, SurfaceSnapshot };

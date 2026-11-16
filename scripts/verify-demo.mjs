@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 
 const run = process.env.MONO_VERIFY_RUN ?? String(Date.now());
 if (!/^[\w-]+$/.test(run)) throw new Error('MONO_VERIFY_RUN 只能使用字母、数字、下划线或连字符');
+const width = process.env.MONO_VERIFY_WIDTH === undefined ? null : Number(process.env.MONO_VERIFY_WIDTH);
+if (width !== null && ![390, 1440].includes(width)) throw new Error('MONO_VERIFY_WIDTH 只能是 390 或 1440');
 const output = new URL(`../.artifacts/demo-${run}/`, import.meta.url);
 await mkdir(output, { recursive: true });
 const browser = await chromium.launch({ channel: 'msedge', headless: false });
@@ -15,7 +17,7 @@ const report = {
 const path = (name) => fileURLToPath(new URL(name, output));
 
 try {
-  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }].filter(viewport => width === null || viewport.width === width)) {
     const context = await browser.newContext({ viewport, reducedMotion: 'no-preference', recordVideo: { dir: path('video/'), size: viewport } });
     const page = await context.newPage();
     const errors = [];
@@ -43,9 +45,12 @@ try {
     const record = () => page.evaluate(() => {
       window.demoCheck?.unsubscribe();
       const s = window.mono.getSnapshot();
-      window.demoCheck = { actions: [s.action], unsubscribe: window.mono.on('actionchange', ({ action }) => {
-        if (window.demoCheck.actions.at(-1) !== action) window.demoCheck.actions.push(action);
-      }) };
+      const actions = [s.action], boundaries = [];
+      const actionStop = window.mono.on('actionchange', ({ action }) => {
+        if (actions.at(-1) !== action) actions.push(action);
+      });
+      const boundaryStop = window.mono.on('boundary', ({ axis }) => boundaries.push(axis));
+      window.demoCheck = { actions, boundaries, unsubscribe: () => { actionStop(); boundaryStop(); } };
     });
     const sequence = () => page.evaluate(() => [...window.demoCheck.actions]);
     const place = async (id) => {
@@ -75,17 +80,27 @@ try {
         await screenshot('roll-start');
         await page.waitForFunction((start) => window.mono.getSnapshot().action === 'roll' && Math.abs(window.mono.getSnapshot().position.x - start) > 10, x);
         await screenshot('roll-middle');
+      } else if (capture === 'climb') {
+        await page.waitForFunction(() => window.mono.getSnapshot().climb !== null);
+        const y = await page.evaluate(() => window.mono.getSnapshot().position.y);
+        await screenshot('climb-start');
+        await page.waitForFunction((start) => window.mono.getSnapshot().climb !== null && Math.abs(window.mono.getSnapshot().position.y - start) > 4, y);
+        await screenshot('climb-middle');
       }
       await page.waitForFunction(() => document.getElementById('cancel-action').disabled && !document.getElementById('message').textContent.includes('正在出发'), undefined, { timeout: 60000 });
       const message = await page.locator('#message').textContent();
       const actions = await sequence();
+      const boundaries = await page.evaluate(() => [...window.demoCheck.boundaries]);
+      const boundary = message.includes('人物已离开当前视口');
       if (id === 'running-long-jump' && viewport.width === 390) {
-        assert.ok(message.includes('已完成') || message.includes('人物已离开当前视口'), message);
+        assert.ok(message.includes('已完成') || boundary, message);
         assert.ok(actions.includes('sprint') && actions.includes('running-long-jump'), actions.join(' → '));
+      } else if (id === 'drop' && viewport.width === 390 && boundary) {
+        assert.ok(actions.includes('fall') && boundaries.includes('y'), actions.join(' → '));
       } else assert.ok(message.includes('已完成'), message);
-      await settled();
+      if (!boundary) await settled();
       if (capture) await screenshot(`${capture}-end`);
-      return { id, message, sequence: actions };
+      return { id, message, sequence: actions, ...(boundary ? { terminal: 'boundary', boundaries } : {}) };
     };
 
     try {
@@ -95,18 +110,25 @@ try {
       assert.equal(await page.evaluate(() => window.mono.getSnapshot().appearance.height), 16);
       assert.equal(await page.evaluate(() => window.mono.getSnapshot().autonomous), false);
       const start = await page.evaluate(() => window.mono.start());
-      assert.equal(start.supportedActions.length, 16);
-      assert.equal(await page.locator('.action-button').count(), 16);
+      assert.equal(start.supportedActions.length, 20);
+      assert.equal(await page.locator('.action-button').count(), start.supportedActions.length);
       assert.equal(await page.locator('.action-button').evaluateAll((buttons) => buttons.some((button) => button.closest('details'))), false);
       await screenshot('top');
       const text = await place('text-runway');
       assert.equal(text.surface.kind, 'text');
       profile.checks.text = { kind: text.surface.kind, evidence: text.surface.evidence };
 
-      for (const id of ['idle', 'walk', 'run', 'sprint', 'turn', 'jump', 'run-jump', 'running-long-jump', 'drop', 'land-soft', 'roll', 'wave', 'crouch', 'rest', 'prone', 'stand-up']) {
+      for (const id of ['idle', 'walk', 'run', 'sprint', 'turn', 'jump', 'run-jump', 'running-long-jump', 'drop', 'land-soft', 'roll', 'wave', 'crouch', 'rest', 'prone', 'stand-up', 'sit', 'question', 'run-in-place', 'climb']) {
         await place('action-runway');
-        profile.actions.push(await request(id, viewport.width === 1440 && (id === 'jump' || id === 'roll') ? id : undefined));
+        profile.actions.push(await request(id, viewport.width === 1440 && ['jump', 'roll', 'climb'].includes(id) ? id : undefined));
       }
+
+      profile.checks.slopedClimb = await request('demo-slope');
+      assert.ok(profile.checks.slopedClimb.sequence.includes('climb'), profile.checks.slopedClimb.sequence.join(' → '));
+      profile.checks.climbing = await page.evaluate(() => {
+        const s = window.mono.getSnapshot();
+        return { navigation: s.navigation, climbingSurfaceCount: s.surfaces.filter(surface => surface.mode === 'climb').length };
+      });
 
       const grounded = await place('action-runway');
       const scroll = await page.evaluate(() => scrollY);
@@ -122,7 +144,7 @@ try {
       profile.checks.documentScrollAnchor = 'passed';
 
       const highDrop = await request('demo-drop');
-      assert.ok(highDrop.sequence.includes('land-soft') && highDrop.sequence.includes('roll'), highDrop.sequence.join(' → '));
+      assert.ok(highDrop.sequence.includes('roll') && !highDrop.sequence.slice(0, highDrop.sequence.indexOf('roll')).includes('land-soft'), highDrop.sequence.join(' → '));
       profile.checks.highDrop = highDrop;
       await screenshot('terrain');
       await page.locator('#route-pace').selectOption('sprint');
@@ -207,6 +229,23 @@ try {
       profile.checks.nestedScrollAnchor = 'passed';
       await screenshot('structure');
 
+      await page.locator('#autonomy').click();
+      await page.locator('#scroll-item').scrollIntoViewIfNeeded();
+      await page.waitForFunction(() => window.mono.getSnapshot().status === 'running');
+      await page.waitForFunction(() => window.mono.getSnapshot().target !== null);
+      profile.checks.autonomousTargets = await page.evaluate(async () => {
+        const samples = [];
+        for (let i = 0; i < 120; i++) {
+          await new Promise(requestAnimationFrame);
+          if (i % 10 === 0) {
+            const s = window.mono.getSnapshot();
+            samples.push({ position: s.position, target: s.target, distance: s.navigation.distance, navigation: s.navigation });
+          }
+        }
+        return samples;
+      });
+      await page.locator('#autonomy').click();
+      await place('scroll-item');
       const runtime = await page.evaluate(async () => {
         const frames = [], scans = [];
         for (let i = 0; i < 120; i++) {
@@ -216,7 +255,7 @@ try {
           scans.push(s.diagnostics.scanMs);
         }
         const percentile = (values, fraction) => values.sort((a, b) => a - b)[Math.floor((values.length - 1) * fraction)];
-        return { frameP50: percentile(frames, 0.5), frameP95: percentile(frames, 0.95), scanP95: percentile(scans, 0.95), surfaceCount: window.mono.getSnapshot().diagnostics.surfaceCount };
+        return { frameP50: percentile(frames, 0.5), frameP95: percentile(frames, 0.95), scanP95: percentile(scans, 0.95), navigation: window.mono.getSnapshot().navigation, surfaceCount: window.mono.getSnapshot().diagnostics.surfaceCount };
       });
       profile.runtimeSample = runtime;
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
@@ -240,7 +279,7 @@ try {
       }
       assert.deepEqual(errors, []);
       profile.status = 'passed';
-      console.log(JSON.stringify({ run, width: viewport.width, status: profile.status, actions: profile.actions.length, checks: profile.checks }));
+      console.log(JSON.stringify({ run, width: viewport.width, status: profile.status, actions: profile.actions.length, checks: Object.keys(profile.checks) }));
     } catch (error) {
       profile.status = 'failed';
       profile.failure = error instanceof Error ? error.message : String(error);
@@ -259,7 +298,7 @@ try {
     }
   }
   await writeFile(new URL('../demo-verification.json', output), JSON.stringify(report, null, 2));
-  console.log(JSON.stringify(report, null, 2));
+  console.log(JSON.stringify({ run, report: path('report.json'), profiles: report.profiles.map(profile => ({ width: profile.width, status: profile.status, actions: profile.actions.length })) }, null, 2));
 } finally {
   await browser.close();
 }

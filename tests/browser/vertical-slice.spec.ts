@@ -133,23 +133,30 @@ test('快照是值副本，不能从外部改写人物坐标', async ({ page }) 
   expect(unchanged).toBe(true);
 });
 
-test('默认自由活动产生连续随机行走，关闭后制动且暂停不漂移', async ({ page }) => {
+test('默认自由活动追踪目标并连续移动，关闭后制动且暂停不漂移', async ({ page }) => {
+  test.setTimeout(45000);
   await page.goto('/examples/');
   await page.evaluate(() => window.demoReady);
   expect((await snapshot(page)).autonomous).toBe(true);
-  await page.waitForFunction(() => window.mono.getSnapshot().action === 'walk');
-  const samples = await page.evaluate(async () => {
+  await page.waitForFunction(() => {
+    const state = window.mono.getSnapshot();
+    return ['walk', 'run', 'sprint'].includes(state.action) && state.target !== null && state.path.length > 0;
+  });
+  const result = await page.evaluate(async () => {
     const samples: { x: number; support: string | undefined }[] = [];
-    for (let i = 0; i < 70; i++) {
+    const height = window.mono.getSnapshot().appearance.height;
+    let travel = 0;
+    for (let i = 0; i < 180 && travel < height; i++) {
       await new Promise(requestAnimationFrame);
       const state = window.mono.getSnapshot();
+      const previous = samples.at(-1);
+      if (previous) travel += Math.abs(state.position!.x - previous.x);
       samples.push({ x: state.position!.x, support: state.support?.surfaceId });
     }
-    return samples;
+    return { samples, travel, height };
   });
-  expect(Math.abs(samples.at(-1)!.x - samples[0]!.x)).toBeGreaterThan(15);
-  expect(samples.every((sample) => sample.support === samples[0]!.support)).toBe(true);
-  expect(samples.slice(1).every((sample, i) => Math.abs(sample.x - samples[i]!.x) < 6)).toBe(true);
+  expect(result.travel).toBeGreaterThanOrEqual(result.height);
+  expect(result.samples.slice(1).every((sample, i) => Math.abs(sample.x - result.samples[i]!.x) < result.height * 0.6)).toBe(true);
   await page.locator('#autonomy').click();
   await expect.poll(async () => Math.abs((await snapshot(page)).velocity.x)).toBeLessThan(0.5);
   expect((await snapshot(page)).autonomous).toBe(false);
@@ -172,7 +179,7 @@ test('真实跳跃逐帧符合恒定重力公式并回到原支撑', async ({ pa
     }
     return { before, samples, action: await action, after: window.mono.getSnapshot() };
   });
-  const gravity = result.before.physics.gravity;
+  const gravity = result.before.physics.gravity * 100;
   const upward = Math.sqrt(2 * gravity * result.before.physics.jumpHeight);
   const air = result.samples.filter((sample) => sample.airborne);
   expect(air.some((sample) => sample.vy < 0)).toBe(true);
@@ -258,12 +265,12 @@ test('手机宽度下移动面板不产生水平溢出，大小与重力控件�
   await page.locator('.settings-panel > summary').click();
   await page.locator('#gravity').evaluate((input) => {
     const control = input as HTMLInputElement;
-    control.value = '490';
+    control.value = '4.9';
     control.dispatchEvent(new Event('input', { bubbles: true }));
     control.dispatchEvent(new Event('change', { bubbles: true }));
   });
   await page.evaluate(() => window.demoReady);
-  expect((await snapshot(page)).physics).toEqual({ gravity: 490, jumpHeight: 52 });
+  expect((await snapshot(page)).physics).toEqual({ gravity: 4.9, jumpHeight: 52, maxFallSpeed: 600 });
 });
 
 test('只带底边的普通元素提供真实水平支撑', async ({ page }) => {

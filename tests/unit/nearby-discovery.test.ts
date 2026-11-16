@@ -5,6 +5,7 @@ import type { Viewport } from '../../src/scene/types';
 const sensor = vi.hoisted(() => ({ now: 0, calls: [] as Element[], text: [] as number[] }));
 vi.mock('../../src/perception/dom-surfaces', () => ({
   measureBorder: () => null,
+  measureClimbEdges: () => [],
   measureFill: (el: Element): SurfaceMeasurement => {
     sensor.now += 2; sensor.calls.push(el);
     const b = el.getBoundingClientRect();

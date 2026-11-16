@@ -98,6 +98,35 @@ describe('运动与接触', () => {
     expect(left.edge).toBe(-1);
   });
 
+  it('跨越限速时刻采用精确分段积分，与任意子步拆分等价', () => {
+    const initial = { position: { x: 10, y: 30 }, velocity: { x: 40, y: -300 } };
+    const gravity = 980, terminal = 120, time = 1.4;
+    const cap = (terminal - initial.velocity.y) / gravity;
+    const expected = stepBody(initial, [], time, gravity, terminal).body;
+    expect(expected.position.x).toBeCloseTo(10 + 40 * time, 8);
+    expect(expected.position.y).toBeCloseTo(30 - 300 * cap + gravity * cap ** 2 / 2 + terminal * (time - cap), 8);
+    expect(expected.velocity.y).toBe(terminal);
+    for (const count of [7, 60, 240]) {
+      let body = initial;
+      for (let i = 0; i < count; i++) body = stepBody(body, [], time / count, gravity, terminal).body;
+      expect(body.position.x).toBeCloseTo(expected.position.x, 8);
+      expect(body.position.y).toBeCloseTo(expected.position.y, 8);
+      expect(body.velocity.y).toBe(terminal);
+    }
+  });
+
+  it('极远下落目标的跳跃速度使用同一终端速度飞行时间', () => {
+    const origin = { x: 0, y: 0 }, target = { x: 600, y: 1000 };
+    const velocity = planJump(origin, target, 100, 320, 980, 120)!;
+    expect(velocity).not.toBeNull();
+    const time = target.x / velocity.x;
+    const result = stepBody({ position: origin, velocity }, [], time, 980, 120).body;
+    expect(result.position.x).toBeCloseTo(target.x, 8);
+    expect(result.position.y).toBeCloseTo(target.y, 8);
+    expect(result.velocity.y).toBe(120);
+    expect(planJump(origin, target, 100, 320, 980)).toBeNull();
+  });
+
   it('跳跃按下降阶段求解，拒绝能力之外的目标', () => {
     expect(planJump({ x: 0, y: 0 }, { x: 40, y: 0 }, 100, 100, 100)).toEqual({ x: 20, y: -100 });
     expect(planJump({ x: 0, y: 0 }, { x: 1000, y: 0 }, 100, 100, 100)).toBeNull();

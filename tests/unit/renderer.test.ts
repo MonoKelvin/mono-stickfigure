@@ -164,7 +164,7 @@ describe('局部 Canvas 渲染缓存', () => {
   });
 
   it('保持完整局部画布：采样动作、头部和脚端不会因缓存变更被裁切', () => {
-    const actions: ActionId[] = ['idle', 'walk', 'run', 'sprint', 'turn', 'wave', 'crouch', 'rest', 'prone', 'stand-up', 'jump', 'run-jump', 'running-long-jump', 'fall', 'land-soft', 'roll'];
+    const actions: ActionId[] = ['idle', 'walk', 'run', 'sprint', 'turn', 'wave', 'crouch', 'rest', 'prone', 'stand-up', 'jump', 'run-jump', 'running-long-jump', 'fall', 'land-soft', 'roll', 'sit', 'question', 'run-in-place', 'climb'];
     for (const h of [12, 16.1, 24, 64]) {
       const f = fixture(1.25, { height: h, lineWidth: h / 4, head: 'square' });
       const p = createPose();
@@ -174,7 +174,8 @@ describe('局部 Canvas 渲染缓存', () => {
         for (let frame = 0; frame < 120; frame++) {
           samplePose(p, { height: h, action, time: frame / 120, clock: frame / 120, dt: 1 / 120,
             facing: frame < 60 ? 1 : -1, verticalVelocity: frame < 60 ? -80 : 80,
-            landProgress: frame / 120, distance: frame * h / 30, horizontalSpeed: 4 * h });
+            landProgress: frame / 120, distance: frame * h / 30, horizontalSpeed: 4 * h,
+            climb: { normal: { x: frame < 60 ? -Math.cos(0.15) : Math.cos(0.15), y: Math.sin(0.15) }, distance: frame * h / 120 } });
           f.calls.length = 0;
           f.renderer.draw({ x: 100.125, y: 200.25 }, p);
           for (const call of f.calls) {

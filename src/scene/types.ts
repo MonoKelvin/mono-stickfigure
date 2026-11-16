@@ -23,6 +23,8 @@ export interface SurfaceSnapshot {
   sourceRevision: number;
   geometryVersion: number;
   kind: 'border' | 'fill' | 'text';
+  mode?: 'platform' | 'climb';
+  normal?: Point;
   a: Point;
   b: Point;
   available: readonly Interval[];
@@ -35,6 +37,10 @@ export interface Anchor {
   surfaceId: string;
   sourceRevision: number;
   u: number;
+}
+
+export interface ClimbContact extends Anchor {
+  normal: Point;
 }
 
 export interface Body {

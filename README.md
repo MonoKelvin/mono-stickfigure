@@ -6,7 +6,7 @@ A tiny stick figure that turns your webpage into a playground.
 
 A framework-independent TypeScript toolkit with no runtime dependencies. The figure finds painted DOM surfaces, walks and jumps between reachable targets, follows scrolling platforms, and falls when its support disappears. Its small Canvas does not block clicks, text selection, or scrolling.
 
-## Try the preview
+## Try locally
 
 Use Node.js `^22.18.0 || ^24.11.0 || >=26.0.0` and npm:
 
@@ -20,7 +20,7 @@ Open [the playground](http://127.0.0.1:5173/examples/). Use [manual mode](http:/
 
 The example imports `dist/index.mjs`. After editing library code, rebuild it or run `npm run build:watch` in another terminal. The dev server uses a fixed port and does not switch ports if 5173 is occupied.
 
-Version 0.1.0 remains an early preview, not the complete planned first release. Run `npm pack` in the repository root to create a tarball, then install it with `npm install ./mono-stickfigure-0.1.0.tgz`. Once 0.1.0 is published to the public npm registry, install it with `npm install mono-stickfigure@0.1.0`.
+The version is maintained in [package.json](package.json); the exported `VERSION` and example display reference that field. Run `npm pack --json` and install the local tarball named by its `filename`. Query `npm view mono-stickfigure version` for the actual public-registry release, then use `npm install mono-stickfigure`; the local version does not establish publication.
 
 ## What works today
 
@@ -28,8 +28,9 @@ Version 0.1.0 remains an early preview, not the complete planned first release. 
 - Bounded, resumable hit-test discovery prioritizes unseen nearby DOM candidates and caret-adjacent words in long paragraphs. Discovery, global scanning and refresh share the existing perception budget; nearby surfaces receive cache-capacity priority. This requires neither per-frame whole-document rescanning nor site-specific selectors.
 - Ordinary text ink-top estimates and local top-contour approximations for large, horizontal, left-to-right text.
 - A single-color, side-facing figure, 16 CSS px tall by default.
-- Walking, running, sprinting, turning, greeting, crouching, resting, lying down, and standing up.
-- Gravity-driven jumps, run-jumps, running long jumps, falls, landing recovery, and rolling after sufficiently hard landings when there is room.
+- Walking, running, sprinting, turning, greeting, crouching, resting, lying down, standing up, sitting with hands behind the body, wondering with one hand rubbing the head, and running in place.
+- Gravity-driven jumps, run-jumps, running long jumps, falls, landing recovery, and immediate shoulder/back rolling after high landings when there is room.
+- Climbing real vertical edges and long steep edges above 80°: reach with both hands in flight, settle the grip and place the feet in sequence, then climb slowly while retaining three contact points, with jumps back to real platforms.
 - Element, surface, or page-coordinate movement targets; cancellable requests and bounded route planning.
 - Platform-relative contact through scrolling and supported translations, dynamic support invalidation, pause/resume, and resource cleanup.
 
@@ -40,7 +41,9 @@ The core takes no page screenshots, performs no network recognition, and uploads
 Start after the document and your target elements are mounted. `#runway` must have an actual, visible, sufficiently wide border, fill, or text surface.
 
 ```ts
-import { createStickFigure } from 'mono-stickfigure';
+import { createStickFigure, VERSION } from 'mono-stickfigure';
+
+console.log(VERSION);
 
 const figure = createStickFigure({
   autonomous: false,
@@ -114,19 +117,20 @@ Cancellation returns `interrupted / aborted`. It does not freeze or teleport an 
 
 Movement/action results are `{ status: 'completed' | 'rejected' | 'interrupted', reason?: string }`. Check the result instead of assuming a resolved Promise means success. Reasons include `unreachable`, `target-invalid`, `support-invalid`, `insufficient-space`, `obstructed`, `edge`, `boundary`, `replaced`, and `aborted`. Invalid creation options throw; `start()` can reject when the browser or mount is unavailable.
 
-The 16 requestable actions are:
+The 20 requestable actions are:
 
 ```text
 idle, walk, run, sprint, turn,
 wave, crouch, rest, prone, stand-up,
-jump, run-jump, running-long-jump, fall, land-soft, roll
+jump, run-jump, running-long-jump, fall, land-soft, roll,
+sit, question, run-in-place, climb
 ```
 
 `anticipate` and `brake` are internal transition states visible in snapshots/events, not requestable actions. Reverse jumps brake and turn before takeoff. A target jump requests one jump, possibly with a run-up; use `moveTo()` for multi-step routes.
 
 `duration` is in seconds and applies to timed movement/pose phases, not the total Promise duration. It must be 0.1–10, or 0.65–10 for rolling. Jump/fall completion depends on physics. Transitions and landing recovery add time; run-jump/long-jump may resume movement after completion.
 
-Events are `ready`, `statechange`, `actionchange`, `surfacechange`, `targetchange`, `boundary`, and `error`:
+Events are `ready`, `statechange`, `actionchange`, `surfacechange`, `targetchange`, `navigationchange`, `boundary`, and `error`:
 
 ```ts
 const unsubscribe = figure.on('actionchange', ({ action }) => {
@@ -140,14 +144,36 @@ unsubscribe();
 figure.destroy();
 ```
 
-Creation defaults include gravity `980` CSS px/s², jump height `52` CSS px, scan budget `2` ms, at most `1500` surfaces, DPR cap `2`, autonomous decisions enabled, and reduced-motion preferences respected. Change appearance/physics/recognition by destroying and creating an instance; there is no runtime setter yet.
+## Gravity, climbing and autonomous goals
+
+`physics.gravity` is actual acceleration in m/s², defaults to `9.8`, and accepts any finite value from `4` to `20` without tiers, quantization or silent clamping. Internally, a fixed `100 CSS px/m` conversion keeps gravity independent of figure size; `jumpHeight` remains in CSS px. `maxFallSpeed` is a finite positive value in CSS px/s, defaulting to `600` independently of figure size.
+
+```ts
+const tunedFigure = createStickFigure({
+  physics: { gravity: 12.255, jumpHeight: 52, maxFallSpeed: 600 },
+  performance: { navigationBudgetMs: 1, scanBudgetMs: 2 },
+});
+tunedFigure.destroy();
+```
+
+Here, `g` is the converted internal acceleration in CSS px/s². Without horizontal forces, flight follows `x = x0 + vx × t` and `y = y0 + vy0 × t + ½g × t²`: constant horizontal speed plus vertical acceleration produces a parabola, not constant overall speed. Very long descents switch to piecewise terminal-speed integration. Planning and runtime use the same model; the capped segment is not an infinite parabola.
+
+`requestAction('climb', { target, signal })` accepts a real steep-edge element or `{ surfaceId, u }`; once attached, it completes the climb on that edge rather than hopping back to a platform as a shortcut. After grabbing, it settles for about 0.65 seconds and climbs at no more than 0.4 figure heights per second; `pace` does not accelerate climbing into running. Without a target it only tries nearby valid edges. `moveTo()` can combine grabbing, climbing and jumping away. `place()` still only explicitly positions the figure on horizontal support. Snapshots distinguish `climb` from `support`. Stopping or cancelling climbing retains valid contact, while an invalid edge releases it into a fall. Airborne cancellation does not freeze velocity.
+
+Autonomy chooses a random destination on a known, visible, usable surface interval before planning a route in frame slices. Arrival immediately selects another destination, optionally followed by a short rest or local wandering. Low-probability mid-trip changes never instantly redirect flight. Unreachable goals allow bounded exploration, throttled replanning and reselection rather than invented ground or per-frame whole-page search.
+
+Snapshot `navigation` records the goal ID, straight-line distance, planning state/reason, cumulative planning time, candidate/expanded/checked-edge counts and replans. A bounded `history` is returned only in debug mode; `navigationchange` reports decision changes, not every frame. Neither records DOM references nor page content. The example displays these values every 250 ms.
+
+Creation defaults include gravity `9.8` m/s², jump height `52` CSS px, scan budget `2` ms, navigation budget `1` ms, at most `1500` surfaces, DPR cap `2`, autonomous decisions enabled, and reduced-motion preferences respected. Change appearance/physics/recognition by destroying and creating an instance; there is no runtime setter yet.
 
 ## Boundaries
 
 - Color evidence compares locally reconstructed composited colors in OKLab, with `colorTolerance: 0.01` by default. Same-colored foreground/background does not establish a surface; unsupported compositing can remain unknown.
-- Borders/text are one-way top supports. Fills additionally provide conservative solid bounds for side and head collisions. Rolling still uses full-height collision clearance.
+- Horizontal borders/text are one-way top supports. Fills additionally provide conservative solid bounds for side and head collisions. Rolling still uses full-height collision clearance.
 - Text estimates are not exact page pixels. Image interiors, arbitrary SVG paths, filters, masks, and complex clipping are not automatically recognized.
-- Navigation is bounded Dijkstra over known candidates, not A* or an exhaustive whole-page search. Targets can be unreachable, and a platform moving after takeoff is not guaranteed to be hit.
+- Steep-edge recognition is limited to real HTML solid borders, distinguishable solid-fill sides, and reliably reconstructed simple self-rotated 2D solid borders. Angles must be strictly above 80°, with a usable segment at least twice the figure height. Complex ancestor transforms, 3D/perspective, masks and clip paths remain unsupported or unknown. A rotated bounding rectangle is not a real slope or solid body.
+- Climbing exits require a reachable real platform. Validated jumps can reach a ledge or an outside platform; pulling over a bare wall without an outside ledge is not implemented.
+- Navigation is bounded Dijkstra over known candidates, not A* or an exhaustive whole-page search. `navigationBudgetMs` is a per-frame soft search budget; a non-preemptible operation can exceed it. Exhausting a slice means pending, not unreachable. Targets can be unreachable, and a platform moving after takeoff is not guaranteed to be hit.
 - Scroll-induced offscreen support keeps its anchor and hides/pauses the figure. Unknown support waits for verification; removed or invisible support releases contact.
 - Default boundary wrapping interrupts the current request when airborne motion exits the sides or falls below the viewport. Upward jumps do not wrap to the bottom. Disabling wrapping waits offscreen rather than inventing a floor.
 - Imports and instance creation are SSR-safe; only `start()` needs a browser. `/core` currently creates the same controller as the default entry.

@@ -2,9 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SurfaceMeasurement } from '../../src/perception/dom-surfaces';
 import type { Viewport } from '../../src/scene/types';
 
-const sensor = vi.hoisted(() => ({ now: 0, cost: 0, calls: [] as Element[] }));
+const sensor = vi.hoisted(() => ({ now: 0, cost: 0, calls: [] as Element[], climbs: [] as SurfaceMeasurement[] }));
 vi.mock('../../src/perception/dom-surfaces', () => ({
   measureBorder: () => null,
+  measureClimbEdges: () => sensor.climbs,
   measureFill: (element: Element): SurfaceMeasurement => {
     sensor.calls.push(element);
     sensor.now += sensor.cost;
@@ -27,7 +28,7 @@ function fixture(count = 1) {
 }
 
 beforeEach(() => {
-  sensor.now = 0; sensor.cost = 0; sensor.calls.length = 0;
+  sensor.now = 0; sensor.cost = 0; sensor.calls.length = 0; sensor.climbs = [];
   vi.spyOn(performance, 'now').mockImplementation(() => sensor.now);
 });
 
@@ -59,6 +60,18 @@ describe('budgeted scene perception', () => {
     expect(sensor.calls).toHaveLength(4);
   });
 
+  it('scroll invalidation makes old client geometry unknown until it is measured again', () => {
+    const f = fixture(2);
+    const revision = f.store.get(f.ids[0]!)!.sourceRevision;
+    f.boxes[0]!.top = 450;
+    f.store.invalidateGeometry();
+    expect(f.ids.every(id => f.store.get(id)?.status === 'unknown')).toBe(true);
+    const updated = f.store.refresh(f.ids[0]!, f.viewport)!;
+    expect(updated.a.y).toBe(450);
+    expect(updated.status).toBe('valid');
+    expect(updated.sourceRevision).toBe(revision);
+  });
+
   it('disconnected supports invalidate immediately and direct API queries remain fresh', () => {
     const f = fixture();
     sensor.now = 10;
@@ -82,6 +95,48 @@ describe('budgeted scene perception', () => {
     f.store.refreshNearby({ x: 50, y: 1000 }, 5, f.viewport, 1);
     expect(inspected).toHaveLength(6);
     expect(new Set(inspected).size).toBe(6);
+  });
+
+  it('同一元素保留水平平台并按稳定特征 ID 共享陡边测量', () => {
+    sensor.climbs = [{ feature: 'fill-left', mode: 'climb', normal: { x: -1, y: 0 }, a: { x: 0, y: 100 }, b: { x: 0, y: 220 }, available: [{ start: 0, end: 1 }], kind: 'fill', evidence: 'dom-fill', status: 'valid', clippedByAncestor: false }];
+    const f = fixture();
+    const climbs = f.store.measureClimbs(f.elements[0]!, f.viewport);
+    expect(sensor.calls).toHaveLength(1);
+    expect(climbs).toHaveLength(1);
+    expect(climbs[0]!.id).toBe(`${f.ids[0]}:climb:fill-left`);
+    expect(climbs[0]!.sourceId).toBe(f.ids[0]);
+    expect(f.store.get(f.ids[0]!)!.mode).toBeUndefined();
+    expect(f.store.refresh(climbs[0]!.id, f.viewport)!.id).toBe(climbs[0]!.id);
+    expect(sensor.calls).toHaveLength(1);
+  });
+
+  it('陡边的法向变化即使外接矩形不变也重新测量，失效重建不复用来源代次', () => {
+    const first: SurfaceMeasurement = { feature: 'border-top', mode: 'climb', normal: { x: -1, y: 0 }, a: { x: 0, y: 100 }, b: { x: 8, y: 220 }, available: [{ start: 0, end: 1 }], kind: 'border', evidence: 'dom-painted-edge', status: 'valid', clippedByAncestor: false };
+    sensor.climbs = [first];
+    const f = fixture(), original = f.store.measureClimbs(f.elements[0]!, f.viewport)[0]!;
+    sensor.climbs = [{ ...first, normal: { x: 1, y: 0 } }];
+    sensor.now = 16;
+    const viewport = { ...f.viewport }; f.store.beginFrame(viewport);
+    const changed = f.store.refresh(original.id, viewport)!;
+    expect(changed.normal?.x).toBe(1);
+    expect(changed.geometryVersion).toBeGreaterThan(original.geometryVersion);
+    expect(changed.sourceRevision).toBe(original.sourceRevision);
+    sensor.climbs = []; f.store.invalidate(); f.store.measure(f.elements[0]!, viewport);
+    expect(f.store.get(original.id)!.status).toBe('invalid');
+    sensor.climbs = [first]; f.store.invalidate();
+    const restored = f.store.measureClimbs(f.elements[0]!, viewport)[0]!;
+    expect(restored.id).toBe(original.id);
+    expect(restored.sourceRevision).toBeGreaterThan(original.sourceRevision);
+  });
+
+  it('新增边特征不能把同一次查询返回的主平台挤出容量', () => {
+    sensor.climbs = [{ feature: 'fill-left', mode: 'climb', normal: { x: -1, y: 0 }, a: { x: 0, y: 100 }, b: { x: 0, y: 220 }, available: [{ start: 0, end: 1 }], kind: 'fill', evidence: 'dom-fill', status: 'valid', clippedByAncestor: false }];
+    const f = fixture(), store = new SurfaceStore({ nodeType: 9 } as Document, 1);
+    store.beginFrame(f.viewport);
+    const primary = store.measure(f.elements[0]!, f.viewport)!;
+    expect(store.get(primary.id)).toBe(primary);
+    expect(store.snapshots()).toHaveLength(1);
+    expect(store.measureClimbs(f.elements[0]!, f.viewport)).toEqual([]);
   });
 
   it('one indivisible measurement may overrun, but never starts 32 after the budget is spent', () => {
